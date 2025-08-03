@@ -1,0 +1,24 @@
+import mysql.connector
+
+# Database config
+DB_CONFIG = {
+    'host': 'localhost',
+    'user': 'ecom_user',
+    'password': 'dummypassword1234',
+    'database': 'ecommerce_db'
+}
+
+try:
+    conn = mysql.connector.connect(**DB_CONFIG)
+    if conn.is_connected():
+        print("✅ Connection successful!")
+except Exception as e:
+    print("❌ Connection failed:", e)
+
+#for sending automated emails
+EMAIL_CONFIG = {
+    'smtp_server': 'smtp.gmail.com',
+    'smtp_port': 587,
+    'sender_email': 'onyxecommercedashboard@gmail.com',
+    'sender_password': 'larq wcbg hljz adci'
+}

@@ -2,14 +2,14 @@ import tkinter as tk
 import sys
 import os
 
-# Add V2 root directory to sys.path (for absolute imports)
+# Add V2 root directly to sys.path (for alll imports: Was causing errors earlier)
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-# Import GUI components
+# Import GUI stuff
 from gui.login_window import LoginWindow
-from gui.main_window import MainWindow  # Import the MainWindow class
+from gui.main_window import MainWindow  # Import   MainWindow class
 
 class MainApplication(tk.Tk):
     """

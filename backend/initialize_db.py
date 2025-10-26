@@ -49,7 +49,8 @@ def create_tables():
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
+                customer_name VARCHAR(100) NOT NULL,
+                user_id INT,
                 total_price DECIMAL(10, 2) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)

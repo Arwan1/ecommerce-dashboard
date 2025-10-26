@@ -3,9 +3,27 @@ from tkinter import messagebox
 import random
 from email_utils import send_email
 from config import DB_CONFIG
-import mysql.connector
-from mysql.connector import Error
+from backend.user_manager import UserManager
+try:
+    import mysql.connector
+    from mysql.connector import Error
+except ImportError:
+    print("❌ mysql-connector-python not found. Installing...")
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "mysql-connector-python"])
+    import mysql.connector
+    from mysql.connector import Error
 import hashlib
+
+class User:
+    """Simple user class to hold user data"""
+    def __init__(self, user_data):
+        self.id = user_data.get('id')
+        self.username = user_data.get('username')
+        self.email = user_data.get('email')
+        self.role = user_data.get('role')
+        self.created_at = user_data.get('created_at')
 
 class LoginWindow(tk.Frame):
     """
@@ -14,6 +32,7 @@ class LoginWindow(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
+        self.user_manager = UserManager()
         self.configure(bg="white")
 
         # Fullscreen setup
@@ -34,11 +53,13 @@ class LoginWindow(tk.Frame):
         tk.Label(form_frame, text="Email:", font=("Arial", 14), bg="white").pack(pady=5)
         self.email_entry = tk.Entry(form_frame, font=("Arial", 14))
         self.email_entry.pack(pady=5)
+        self.email_entry.bind('<Return>', lambda event: self.login())
 
         # Password input
         tk.Label(form_frame, text="Password:", font=("Arial", 14), bg="white").pack(pady=5)
         self.password_entry = tk.Entry(form_frame, font=("Arial", 14), show="*")
         self.password_entry.pack(pady=5)
+        self.password_entry.bind('<Return>', lambda event: self.login())
 
         # Show password checkbox
         self.show_password_var = tk.BooleanVar()
@@ -58,10 +79,14 @@ class LoginWindow(tk.Frame):
         email = self.email_entry.get()
         password = self.password_entry.get()
 
+        if not email or not password:
+            messagebox.showerror("Error", "Please enter both email and password.")
+            return
+
         try:
             # Connect to the database and validate credentials
             conn = mysql.connector.connect(**DB_CONFIG)
-            cursor = conn.cursor()
+            cursor = conn.cursor(dictionary=True)
 
             # Hash the entered password
             hashed_password = hashlib.sha256(password.encode()).hexdigest()
@@ -71,13 +96,17 @@ class LoginWindow(tk.Frame):
                 "SELECT * FROM users WHERE email=%s AND password=%s", (email, hashed_password)
             )
 
-            user = cursor.fetchone()
+            user_data = cursor.fetchone()
             cursor.close()
             conn.close()
 
-            if user:
+            if user_data:
+                # Create a User object with the retrieved data
+                user = User(user_data)
+                print(f"Debug: Logged in user: {user.username}, Role: {user.role}")  # Debug info
+                
                 # Clear the login window and proceed to the main GUI
-                self.parent.show_main_gui()
+                self.parent.show_main_gui(user)
             else:
                 messagebox.showerror("Login Failed", "Invalid email or password.")
         except Exception as e:
@@ -99,11 +128,13 @@ class LoginWindow(tk.Frame):
         tk.Label(form_frame, text="Email:", font=("Arial", 14), bg="white").pack(pady=5)
         self.new_email_entry = tk.Entry(form_frame, font=("Arial", 14))
         self.new_email_entry.pack(pady=5)
+        self.new_email_entry.bind('<Return>', lambda event: self.register())
 
         # Password input
         tk.Label(form_frame, text="Password:", font=("Arial", 14), bg="white").pack(pady=5)
         self.new_password_entry = tk.Entry(form_frame, font=("Arial", 14), show="*")
         self.new_password_entry.pack(pady=5)
+        self.new_password_entry.bind('<Return>', lambda event: self.register())
 
         # Show password checkbox
         self.show_new_password_var = tk.BooleanVar()
@@ -160,15 +191,3 @@ class LoginWindow(tk.Frame):
             messagebox.showinfo("Register", f"Registered {new_email}. A confirmation code has been sent to your email.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to register: {e}")
-
-    def login(self):
-        # Example login logic
-        username = self.username_entry.get()
-        password = self.password_entry.get()
-
-        # Replace this with actual authentication logic
-        if username == "admin" and password == "password":
-            user = type("User", (object,), {"role": "admin"})()  # Mock user object
-            self.master.show_main_gui(user)
-        else:
-            tk.messagebox.showerror("Login Failed", "Invalid credentials")

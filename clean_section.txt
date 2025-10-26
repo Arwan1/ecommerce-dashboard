@@ -1,0 +1,26 @@
+# Clean supplier returns section for returns_dashboard.py
+
+            # 3. Supplier return analysis - handled separately by create_supplier_chart()
+            supplier_returns = []  # Empty since we handle this separately
+
+            # 4. Return reasons distribution (bottom-right)
+            try:
+                cursor.execute(f"""
+                    SELECT 
+                        CASE 
+                            WHEN reason LIKE '%damage%' OR reason LIKE '%broken%' OR reason LIKE '%defect%' THEN 'Damaged/Defective'
+                            WHEN reason LIKE '%size%' OR reason LIKE '%fit%' THEN 'Size/Fit Issue'
+                            WHEN reason LIKE '%wrong%' OR reason LIKE '%incorrect%' THEN 'Wrong Item'
+                            WHEN reason LIKE '%quality%' THEN 'Quality Issue'
+                            ELSE 'Other'
+                        END as reason_category,
+                        COUNT(*) as count
+                    FROM returns r
+                    WHERE 1=1 {date_filter.replace('created_at', 'r.created_at')}
+                    GROUP BY reason_category
+                    ORDER BY count DESC
+                """)
+                return_reasons = cursor.fetchall()
+            except Exception as e:
+                print(f"Error in return reasons query: {e}")
+                return_reasons = []

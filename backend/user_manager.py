@@ -30,3 +30,23 @@ class UserManager:
         hashed_password = self.security.hash_password(password)
         return self.db_ops.add_user(username, hashed_password, email, role)
 
+    def get_all_users(self):
+        """
+        Retrieves all users from the database.
+        """
+        return self.db_ops.get_all_users()
+
+    def update_user(self, user_id, username=None, email=None, password=None, role=None):
+        """
+        Updates user information.
+        """
+        if password:
+            password = self.security.hash_password(password)
+        return self.db_ops.update_user(user_id, username, email, password, role)
+
+    def delete_user(self, user_id):
+        """
+        Deletes a user from the database.
+        """
+        return self.db_ops.delete_user(user_id)
+

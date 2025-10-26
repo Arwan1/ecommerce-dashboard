@@ -5,6 +5,7 @@ from gui.inventory_dashboard import InventoryDashboard
 from gui.user_dashboard import UserDashboard
 from gui.analytics_dashboard import AnalyticsDashboard
 from gui.returns_dashboard import ReturnsDashboard
+from gui.main_dashboard import MainDashboard
 
 class MainWindow(tk.Frame):
     """
@@ -26,7 +27,11 @@ class MainWindow(tk.Frame):
         self.notebook = ttk.Notebook(self.master)
         self.notebook.pack(expand=True, fill="both")
 
-        # Create the different dashboards as tabs
+        # Create the main dashboard tab first
+        main_dashboard_frame = MainDashboard(self.notebook, self.notebook, self.user)
+        self.notebook.add(main_dashboard_frame, text="Main")
+
+        # Create the other dashboards as tabs
         order_frame = OrderDashboard(self.notebook)
         inventory_frame = InventoryDashboard(self.notebook)
         analytics_frame = AnalyticsDashboard(self.notebook)

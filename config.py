@@ -1,4 +1,11 @@
-import mysql.connector
+try:
+    import mysql.connector
+except ImportError:
+    print("❌ mysql-connector-python not installed. Installing now...")
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "mysql-connector-python"])
+    import mysql.connector
 
 # Database config
 DB_CONFIG = {

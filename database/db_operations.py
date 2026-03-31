@@ -342,3 +342,32 @@ class DBOperations:
             return low_materials
         finally:
             conn.close()
+
+    def get_supplier_performance(self):
+        """Get supplier performance based on return rates and ratings."""
+        conn = get_db_connection()
+        if not conn: return []
+        try:
+            cursor = conn.cursor(dictionary=True)
+            query = """
+                SELECT 
+                    p.ready_made_supplier AS supplier_name,
+                    COUNT(DISTINCT r.id) AS total_returns,
+                    COUNT(DISTINCT oi.id) AS total_items_sold,
+                    ROUND((COUNT(DISTINCT r.id) * 100.0 / NULLIF(COUNT(DISTINCT oi.id), 0)), 2) AS return_rate_percent,
+                    ROUND(AVG(r.refund_amount), 2) AS avg_refund_amount,
+                    SUM(r.refund_amount) AS total_refund_amount,
+                    AVG(p.supplier_rating) AS avg_supplier_rating
+                FROM products p
+                LEFT JOIN returns r ON r.product_id = p.id
+                LEFT JOIN order_items oi ON oi.product_id = p.id
+                WHERE p.ready_made_supplier IS NOT NULL 
+                GROUP BY p.ready_made_supplier
+                HAVING COUNT(DISTINCT oi.id) > 0
+                ORDER BY avg_supplier_rating DESC, return_rate_percent DESC;
+            """
+            cursor.execute(query)
+            supplier_performance = cursor.fetchall()
+            return supplier_performance
+        finally:
+            conn.close()

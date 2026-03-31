@@ -12,16 +12,16 @@ class UserManager:
         self.db_ops = DBOperations()
         self.security = SecurityManager()  # Initialize SecurityManager
 
-    def login(self, username, password):
-        """
-        Verifies the username and password against the database.
-        """
-        user_data = self.db_ops.get_user(username)
-        print(f"Debug: Retrieved user data: {user_data}")  # Debugging
+    # def login(self, username, password):
+    #     """
+    #     Verifies the username and password against the database.
+    #     """
+    #     user_data = self.db_ops.get_user(username)
+    #     print(f"Debug: Retrieved user data: {user_data}")  # Debugging
 
-        if user_data and user_data["password"] == password:  # Compare hashed passwords
-            return user_data
-        return None
+    #     if user_data and user_data["password"] == password:  # Compare hashed passwords
+    #         return user_data
+    #     return None
 
     def add_user(self, username, password, email, role="user"):
         """

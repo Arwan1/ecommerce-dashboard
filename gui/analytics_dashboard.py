@@ -6,8 +6,10 @@ import threading
 from datetime import datetime, timedelta
 import os
 from backend.analytics_manager import AnalyticsManager
+from backend.inventory_manager import InventoryManager
 from database.db_operations import DBOperations
 from database.db_connector import get_db_connection
+from gui.scroll_utils import attach_scrollable_frame, bind_mousewheel_to_canvas
 
 # PDF generation imports
 try:
@@ -33,6 +35,7 @@ class AnalyticsDashboard(tk.Frame):
         super().__init__(master)
         self.master = master
         self.analytics_manager = AnalyticsManager()
+        self.inventory_manager = InventoryManager()
         self.db_ops = DBOperations()
         self.create_widgets()
         self.load_analytics_data()
@@ -55,23 +58,22 @@ class AnalyticsDashboard(tk.Frame):
         scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        attach_scrollable_frame(canvas, scrollable_frame)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        bind_mousewheel_to_canvas(self, canvas)
 
         # Report Generation Section (moved to top)
         self.create_report_section(scrollable_frame)
 
         # KPI Cards Section
         self.create_kpi_section(scrollable_frame)
+
+        # AI prediction section
+        self.create_prediction_section(scrollable_frame)
         
         # Charts Section
         self.create_charts_section(scrollable_frame)
@@ -134,6 +136,67 @@ class AnalyticsDashboard(tk.Frame):
         # Embed in tkinter
         self.canvas = FigureCanvasTkAgg(self.fig, charts_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def create_prediction_section(self, parent):
+        """Create AI sales forecast section."""
+        prediction_frame = ttk.LabelFrame(parent, text="AI Sales Forecast", padding="10")
+        prediction_frame.pack(fill="x", pady=5)
+
+        cards_frame = ttk.Frame(prediction_frame)
+        cards_frame.pack(fill="x", pady=(0, 10))
+
+        self.prediction_cards = {}
+        prediction_metrics = [
+            ("Next Forecast Revenue", "revenue", "#1565C0"),
+            ("Expected Orders", "orders", "#2E7D32"),
+            ("Forecast Confidence", "confidence", "#EF6C00")
+        ]
+
+        for index, (title, key, color) in enumerate(prediction_metrics):
+            card_frame = tk.Frame(cards_frame, bg=color, relief="raised", bd=2)
+            card_frame.grid(row=0, column=index, padx=10, pady=5, sticky="ew")
+
+            tk.Label(
+                card_frame,
+                text=title,
+                font=("Arial", 10, "bold"),
+                bg=color,
+                fg="white"
+            ).pack(pady=(10, 5))
+
+            value_label = tk.Label(
+                card_frame,
+                text="Loading...",
+                font=("Arial", 16, "bold"),
+                bg=color,
+                fg="white"
+            )
+            value_label.pack(pady=(0, 10))
+            self.prediction_cards[key] = value_label
+
+        for index in range(3):
+            cards_frame.columnconfigure(index, weight=1)
+
+        summary_frame = ttk.Frame(prediction_frame)
+        summary_frame.pack(fill="x")
+
+        self.prediction_summary_label = ttk.Label(
+            summary_frame,
+            text="Generating forecast from recent sales activity...",
+            font=("Arial", 10, "bold"),
+            foreground="#1F2937"
+        )
+        self.prediction_summary_label.pack(anchor="w", pady=(0, 6))
+
+        self.prediction_detail_label = ttk.Label(
+            summary_frame,
+            text="Recommendations will appear here after the sales history is loaded.",
+            font=("Arial", 9),
+            foreground="#4B5563",
+            justify="left",
+            wraplength=1000
+        )
+        self.prediction_detail_label.pack(anchor="w")
 
     def create_recent_activity_section(self, parent):
         """Create recent activity section"""
@@ -253,11 +316,14 @@ class AnalyticsDashboard(tk.Frame):
                 # Get chart data with time period filter
                 chart_data = self.get_chart_data(time_period)
                 
+                # Build AI prediction from current chart data
+                prediction_data = self.analytics_manager.build_sales_prediction(chart_data, time_period)
+
                 # Get recent activity
                 recent_orders = self.get_recent_orders()
                 
                 # Update UI in main thread
-                self.after(0, lambda: self.update_dashboard(kpi_data, chart_data, recent_orders))
+                self.after(0, lambda: self.update_dashboard(kpi_data, chart_data, prediction_data, recent_orders))
             except Exception as e:
                 error_msg = str(e)
                 self.after(0, lambda: messagebox.showerror("Error", f"Failed to load data: {error_msg}"))
@@ -270,7 +336,7 @@ class AnalyticsDashboard(tk.Frame):
         thread.daemon = True
         thread.start()
 
-    def update_dashboard(self, kpi_data, chart_data, recent_orders):
+    def update_dashboard(self, kpi_data, chart_data, prediction_data, recent_orders):
         """Update dashboard with loaded data"""
         # Update KPI cards
         self.kpi_cards['orders'].config(text=f"{kpi_data['orders']:,}")
@@ -281,15 +347,18 @@ class AnalyticsDashboard(tk.Frame):
         self.kpi_cards['returns'].config(text=f"{kpi_data['returns']:,}")
         
         # Update quick stats in control panel
-        self.update_quick_stats(chart_data)
+        self.update_quick_stats(chart_data, prediction_data)
+
+        # Update prediction section
+        self.update_prediction_section(prediction_data)
         
         # Update charts
-        self.update_charts(chart_data)
+        self.update_charts(chart_data, prediction_data)
         
         # Update recent activity
         self.update_recent_activity(recent_orders)
 
-    def update_quick_stats(self, chart_data):
+    def update_quick_stats(self, chart_data, prediction_data):
         """Update the quick stats display in the control panel"""
         try:
             time_period = self.period_var.get()
@@ -306,7 +375,12 @@ class AnalyticsDashboard(tk.Frame):
             # Update the quick stats label
             if total_orders > 0:
                 avg_order_value = total_revenue / total_orders
-                stats_text = f"{time_period}: {total_orders:,} orders • ${total_revenue:,.2f} revenue • ${avg_order_value:.2f} avg"
+                forecast_label = prediction_data.get('forecast_period_label', 'next period')
+                forecast_revenue = prediction_data.get('predicted_revenue', 0)
+                stats_text = (
+                    f"{time_period}: {total_orders:,} orders • ${total_revenue:,.2f} revenue • "
+                    f"${avg_order_value:.2f} avg • Forecast ${forecast_revenue:,.2f} next {forecast_label}"
+                )
             else:
                 stats_text = f"{time_period}: No data available"
             
@@ -315,6 +389,29 @@ class AnalyticsDashboard(tk.Frame):
         except Exception as e:
             self.quick_stats_label.config(text="Error calculating stats", foreground="#F44336")
             print(f"Quick stats error: {e}")
+
+    def update_prediction_section(self, prediction_data):
+        """Update the forecast summary cards and recommendations."""
+        forecast_label = prediction_data.get('forecast_period_label', 'next period')
+        self.prediction_cards['revenue'].config(
+            text=f"${prediction_data.get('predicted_revenue', 0):,.2f}\n{forecast_label}"
+        )
+        self.prediction_cards['orders'].config(
+            text=f"{prediction_data.get('predicted_orders', 0):,}\n{forecast_label}"
+        )
+        self.prediction_cards['confidence'].config(
+            text=f"{prediction_data.get('confidence_score', 0)}%\n{prediction_data.get('confidence_label', 'Low confidence')}"
+        )
+
+        trend = prediction_data.get('trend_direction', 'Stable')
+        summary = prediction_data.get('summary', 'No forecast available.')
+        recommendations = prediction_data.get('recommendations', [])
+        recommendation_text = " | ".join(recommendations) if recommendations else "No recommendations available."
+
+        self.prediction_summary_label.config(
+            text=f"{trend} outlook: {summary}"
+        )
+        self.prediction_detail_label.config(text=recommendation_text)
 
     def get_chart_data(self, time_period=None):
         """Get data for charts with optional time period filter"""
@@ -383,6 +480,8 @@ class AnalyticsDashboard(tk.Frame):
                             'revenue': row['revenue']
                         }
                         monthly_sales.append(formatted_row)
+                for row in monthly_sales:
+                    row['period'] = str(row.get('period'))
                 print(f"   Sales data: {len(monthly_sales)} periods for {time_period}")
             except Exception as e:
                 print(f"   Error in sales query: {e}")
@@ -461,7 +560,215 @@ class AnalyticsDashboard(tk.Frame):
         else:
             return ""
 
-    def update_charts(self, chart_data):
+    def _safe_percent_change(self, current_value, previous_value):
+        """Calculate percent change while handling missing baseline values."""
+        current_value = float(current_value or 0)
+        previous_value = float(previous_value or 0)
+        if previous_value == 0:
+            return None
+        return ((current_value - previous_value) / previous_value) * 100.0
+
+    def _build_period_snapshot_rows(self, chart_data, prediction_data):
+        """Summarize the currently selected period for PDF reporting."""
+        sales_history = chart_data.get('monthly_sales', [])
+        if not sales_history:
+            return []
+
+        total_orders = sum(int(item.get('orders') or 0) for item in sales_history)
+        total_revenue = sum(float(item.get('revenue') or 0) for item in sales_history)
+        avg_order_value = (total_revenue / total_orders) if total_orders else 0.0
+
+        best_period = max(sales_history, key=lambda item: float(item.get('revenue') or 0))
+        latest_period = sales_history[-1]
+        previous_period = sales_history[-2] if len(sales_history) > 1 else None
+
+        revenue_change = self._safe_percent_change(
+            latest_period.get('revenue', 0),
+            previous_period.get('revenue', 0) if previous_period else 0
+        )
+        orders_change = self._safe_percent_change(
+            latest_period.get('orders', 0),
+            previous_period.get('orders', 0) if previous_period else 0
+        )
+
+        rows = [
+            ['Orders in Selected Period', f"{total_orders:,}"],
+            ['Revenue in Selected Period', f"${total_revenue:,.2f}"],
+            ['Average Order Value', f"${avg_order_value:,.2f}"],
+            ['Best Revenue Period', f"{best_period.get('period', 'N/A')} (${float(best_period.get('revenue') or 0):,.2f})"],
+            ['Latest Period Revenue', f"${float(latest_period.get('revenue') or 0):,.2f}"],
+            ['Latest Period Orders', f"{int(latest_period.get('orders') or 0):,}"],
+            ['AI Forecast Revenue', f"${float(prediction_data.get('predicted_revenue') or 0):,.2f}"],
+            ['AI Forecast Orders', f"{int(prediction_data.get('predicted_orders') or 0):,}"],
+        ]
+
+        if revenue_change is not None:
+            rows.append(['Revenue Change vs Prior Period', f"{revenue_change:+.1f}%"])
+        if orders_change is not None:
+            rows.append(['Orders Change vs Prior Period', f"{orders_change:+.1f}%"])
+        return rows
+
+    def _build_order_trend_rows(self, chart_data, limit=8):
+        """Return recent order and revenue trend rows for the PDF."""
+        sales_history = chart_data.get('monthly_sales', [])
+        if not sales_history:
+            return []
+
+        rows = [['Period', 'Orders', 'Revenue', 'Avg Order', 'Rev Change']]
+        visible_history = sales_history[-limit:]
+
+        for index, item in enumerate(visible_history):
+            orders = int(item.get('orders') or 0)
+            revenue = float(item.get('revenue') or 0)
+            avg_order_value = (revenue / orders) if orders else 0.0
+            previous_item = visible_history[index - 1] if index > 0 else None
+            change = self._safe_percent_change(
+                revenue,
+                previous_item.get('revenue', 0) if previous_item else 0
+            )
+            change_text = "N/A" if change is None else f"{change:+.1f}%"
+            rows.append([
+                str(item.get('period', 'N/A')),
+                f"{orders:,}",
+                f"${revenue:,.2f}",
+                f"${avg_order_value:,.2f}",
+                change_text
+            ])
+        return rows
+
+    def _build_status_mix_rows(self, chart_data):
+        """Return order-status mix with percentages for the report."""
+        status_data = chart_data.get('order_status', [])
+        total_count = sum(int(item.get('count') or 0) for item in status_data)
+        if not status_data or total_count <= 0:
+            return []
+
+        rows = [['Status', 'Orders', 'Share']]
+        for item in status_data:
+            count = int(item.get('count') or 0)
+            share = (count / total_count * 100.0) if total_count else 0.0
+            rows.append([
+                str(item.get('status', 'Unknown')),
+                f"{count:,}",
+                f"{share:.1f}%"
+            ])
+        return rows
+
+    def _build_top_product_rows(self, chart_data, limit=6):
+        """Return best-selling products for the report."""
+        top_products = chart_data.get('top_products', [])
+        if not top_products:
+            return []
+
+        rows = [['Product', 'Units Sold']]
+        for item in top_products[:limit]:
+            rows.append([
+                str(item.get('name', 'Unknown'))[:32],
+                f"{int(item.get('total_sold') or 0):,}"
+            ])
+        return rows
+
+    def _build_supplier_rows(self, supplier_overview, limit=8):
+        """Return supplier rating rows for PDF display."""
+        if not supplier_overview:
+            return []
+
+        rows = [['Supplier', 'Type', 'Rating', 'Return %', 'Confidence', 'Status']]
+        for supplier in supplier_overview[:limit]:
+            rows.append([
+                str(supplier.get('supplier_name', 'Unknown'))[:24],
+                str(supplier.get('supplier_type', 'Unknown'))[:16],
+                f"{float(supplier.get('rating') or 0):.1f}/5.0",
+                f"{float(supplier.get('return_rate_percent') or 0):.1f}%",
+                str(supplier.get('confidence_label', 'N/A')),
+                str(supplier.get('status_label', 'N/A'))
+            ])
+        return rows
+
+    def _build_supplier_watchlist_rows(self, supplier_overview, limit=5):
+        """Highlight suppliers that need attention."""
+        risky_suppliers = [
+            supplier for supplier in supplier_overview
+            if supplier.get('status_label') in ['At Risk', 'Watch']
+            or float(supplier.get('return_rate_percent') or 0) >= 8.0
+        ]
+        if not risky_suppliers:
+            return []
+
+        risky_suppliers = sorted(
+            risky_suppliers,
+            key=lambda supplier: (
+                float(supplier.get('rating') or 0),
+                -float(supplier.get('return_rate_percent') or 0)
+            )
+        )
+
+        rows = [['Supplier', 'Return %', 'Quality Issues', 'Refund Rate', 'Status']]
+        for supplier in risky_suppliers[:limit]:
+            rows.append([
+                str(supplier.get('supplier_name', 'Unknown'))[:24],
+                f"{float(supplier.get('return_rate_percent') or 0):.1f}%",
+                f"{float(supplier.get('quality_issue_rate_percent') or 0):.1f}%",
+                f"{float(supplier.get('refund_rate_percent') or 0):.1f}%",
+                str(supplier.get('status_label', 'N/A'))
+            ])
+        return rows
+
+    def _build_supplier_summary_text(self, supplier_overview):
+        """Create a short narrative summary for supplier performance."""
+        if not supplier_overview:
+            return "Supplier quality data is not available for the selected period."
+
+        supplier_count = len(supplier_overview)
+        avg_rating = sum(float(item.get('rating') or 0) for item in supplier_overview) / supplier_count
+        at_risk_count = sum(1 for item in supplier_overview if item.get('status_label') in ['At Risk', 'Watch'])
+        strongest_supplier = max(
+            supplier_overview,
+            key=lambda item: (float(item.get('rating') or 0), -float(item.get('return_rate_percent') or 0))
+        )
+        return (
+            f"{supplier_count} suppliers were evaluated for {self.period_var.get().lower()}. "
+            f"Average supplier rating is {avg_rating:.1f}/5.0, with {at_risk_count} supplier(s) needing attention. "
+            f"Best current performer: {strongest_supplier.get('supplier_name', 'Unknown')} "
+            f"at {float(strongest_supplier.get('rating') or 0):.1f}/5.0."
+        )
+
+    def _build_watchlist_rows(self, surge_items, limit=5):
+        """Return AI demand watchlist rows for products with rising demand."""
+        if not surge_items:
+            return []
+
+        rows = [['Product', '7d Units', 'Next 7d', 'Stock', 'Coverage', 'Urgency']]
+        for item in surge_items[:limit]:
+            coverage = item.get('stock_coverage_weeks')
+            rows.append([
+                str(item.get('product_name', 'Unknown'))[:24],
+                f"{int(item.get('units_last_7') or 0):,}",
+                f"{int(item.get('predicted_next_7') or 0):,}",
+                f"{int(item.get('stock') or 0):,}",
+                f"{coverage:.1f} wk" if coverage is not None else "N/A",
+                str(item.get('urgency', 'N/A'))
+            ])
+        return rows
+
+    def _create_table_style(self, header_color, body_color, font_size=8, align='CENTER'):
+        """Build a reusable ReportLab table style."""
+        return TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(header_color)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), align),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), font_size + 1),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 5),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor(body_color)),
+            ('GRID', (0, 0), (-1, -1), 0.75, colors.HexColor('#D1D5DB')),
+            ('FONTSIZE', (0, 1), (-1, -1), font_size)
+        ])
+
+    def update_charts(self, chart_data, prediction_data):
         """Update matplotlib charts"""
         print("📈 Updating charts...")
         
@@ -477,19 +784,34 @@ class AnalyticsDashboard(tk.Frame):
             try:
                 periods = [item['period'] for item in chart_data['monthly_sales']]
                 revenues = [float(item['revenue'] or 0) for item in chart_data['monthly_sales']]
+                forecast_series = prediction_data.get('forecast_series', [])
+                forecast_periods = [item['period'] for item in forecast_series]
+                forecast_revenues = [float(item['revenue'] or 0) for item in forecast_series]
                 
-                self.ax1.plot(periods, revenues, marker='o', linewidth=2, markersize=6, color='#2196F3')
+                self.ax1.plot(periods, revenues, marker='o', linewidth=2, markersize=6, color='#2196F3', label='Actual')
+                if forecast_periods:
+                    self.ax1.plot(
+                        forecast_periods,
+                        forecast_revenues,
+                        marker='o',
+                        linewidth=2,
+                        markersize=6,
+                        linestyle='--',
+                        color='#F44336',
+                        label='Forecast'
+                    )
                 
                 # Dynamic title based on time period
                 if time_period in ["Last 7 Days", "Last 30 Days"]:
-                    title = f'Daily Revenue Trend ({time_period})'
+                    title = f'Daily Revenue Trend + Forecast ({time_period})'
                 else:
-                    title = f'Monthly Revenue Trend ({time_period})'
+                    title = f'Monthly Revenue Trend + Forecast ({time_period})'
                 
                 self.ax1.set_title(title, fontweight='bold')
                 self.ax1.set_ylabel('Revenue ($)')
                 self.ax1.tick_params(axis='x', rotation=45)
                 self.ax1.grid(True, alpha=0.3)
+                self.ax1.legend(loc='upper left')
                 print("   ✅ Revenue chart updated")
             except Exception as e:
                 print(f"   ❌ Revenue chart error: {e}")
@@ -560,14 +882,21 @@ class AnalyticsDashboard(tk.Frame):
             try:
                 periods = [item['period'] for item in chart_data['monthly_sales']]
                 orders = [int(item['orders'] or 0) for item in chart_data['monthly_sales']]
-                
-                self.ax4.bar(periods, orders, color='#9C27B0', alpha=0.7)
+                forecast_series = prediction_data.get('forecast_series', [])
+                forecast_periods = [item['period'] for item in forecast_series]
+                forecast_orders = [int(item['orders'] or 0) for item in forecast_series]
+
+                combined_periods = periods + forecast_periods
+                combined_orders = orders + forecast_orders
+                combined_colors = (['#9C27B0'] * len(periods)) + (['#FFB74D'] * len(forecast_periods))
+
+                self.ax4.bar(combined_periods, combined_orders, color=combined_colors, alpha=0.8)
                 
                 # Dynamic title based on time period
                 if time_period in ["Last 7 Days", "Last 30 Days"]:
-                    title = f'Daily Orders Count ({time_period})'
+                    title = f'Daily Orders Count + Forecast ({time_period})'
                 else:
-                    title = f'Monthly Orders Count ({time_period})'
+                    title = f'Monthly Orders Count + Forecast ({time_period})'
                 
                 self.ax4.set_title(title, fontweight='bold')
                 self.ax4.set_ylabel('Number of Orders')
@@ -659,21 +988,53 @@ class AnalyticsDashboard(tk.Frame):
             }
             
             chart_data = self.get_chart_data()
+            prediction_data = self.analytics_manager.build_sales_prediction(chart_data, self.period_var.get())
             recent_orders = self.get_recent_orders()
+            try:
+                supplier_overview = self.inventory_manager.get_supplier_quality_overview(self.period_var.get(), "All Suppliers")
+            except Exception as supplier_error:
+                print(f"Supplier overview unavailable for PDF report: {supplier_error}")
+                supplier_overview = []
+
+            try:
+                surge_items = self.inventory_manager.get_predicted_product_surges(limit=5)
+            except Exception as surge_error:
+                print(f"Demand surge watchlist unavailable for PDF report: {surge_error}")
+                surge_items = []
 
             # Create PDF
-            self.create_pdf_report(filename, kpi_data, chart_data, recent_orders)
+            self.create_pdf_report(
+                filename,
+                kpi_data,
+                chart_data,
+                prediction_data,
+                recent_orders,
+                supplier_overview,
+                surge_items
+            )
             
             messagebox.showinfo("Success", f"Report generated successfully: {filename}")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate PDF: {str(e)}")
 
-    def create_pdf_report(self, filename, kpi_data, chart_data, recent_orders):
+    def create_pdf_report(self, filename, kpi_data, chart_data, prediction_data, recent_orders, supplier_overview=None, surge_items=None):
         """Create the actual PDF report"""
-        doc = SimpleDocTemplate(filename, pagesize=A4)
+        supplier_overview = supplier_overview or []
+        surge_items = surge_items or []
+
+        doc = SimpleDocTemplate(filename, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
         styles = getSampleStyleSheet()
         story = []
+
+        section_note_style = ParagraphStyle(
+            'SectionNote',
+            parent=styles['BodyText'],
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor('#4B5563'),
+            spaceAfter=8
+        )
 
         # Title
         title_style = ParagraphStyle(
@@ -685,10 +1046,15 @@ class AnalyticsDashboard(tk.Frame):
         )
         story.append(Paragraph("Business Analytics Report", title_style))
         story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+        story.append(Paragraph(f"Time period: {self.period_var.get()} | Report type: {self.report_type_var.get()}", styles['Normal']))
+        story.append(Paragraph(
+            "This report combines executive KPIs, supplier health, recent order performance, and AI-assisted planning signals.",
+            section_note_style
+        ))
         story.append(Spacer(1, 20))
 
         # KPI Summary Table
-        story.append(Paragraph("Key Performance Indicators", styles['Heading2']))
+        story.append(Paragraph("Lifetime KPI Snapshot", styles['Heading2']))
         kpi_table_data = [
             ['Metric', 'Value'],
             ['Total Orders', f"{kpi_data['orders']:,}"],
@@ -699,19 +1065,135 @@ class AnalyticsDashboard(tk.Frame):
             ['Pending Returns', f"{kpi_data['returns']:,}"]
         ]
         
-        kpi_table = Table(kpi_table_data, colWidths=[3*inch, 2*inch])
-        kpi_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2196F3')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
+        kpi_table = Table(kpi_table_data, colWidths=[3.5*inch, 2.2*inch], repeatRows=1)
+        kpi_table.setStyle(self._create_table_style('#2196F3', '#E3F2FD', font_size=9))
         story.append(kpi_table)
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 14))
+
+        period_snapshot_rows = self._build_period_snapshot_rows(chart_data, prediction_data)
+        if period_snapshot_rows:
+            story.append(Paragraph("Selected Period Snapshot", styles['Heading2']))
+            period_table = Table([['Metric', 'Value']] + period_snapshot_rows, colWidths=[3.5*inch, 2.2*inch], repeatRows=1)
+            period_table.setStyle(self._create_table_style('#6D4C41', '#EFEBE9', font_size=9))
+            story.append(period_table)
+            story.append(Spacer(1, 14))
+
+        top_product_rows = self._build_top_product_rows(chart_data)
+        if top_product_rows:
+            story.append(Paragraph("Top Products", styles['Heading2']))
+            top_products_table = Table(top_product_rows, colWidths=[4.3*inch, 1.4*inch], repeatRows=1)
+            top_products_table.setStyle(self._create_table_style('#43A047', '#E8F5E9', font_size=8))
+            story.append(top_products_table)
+            story.append(Spacer(1, 12))
+
+        status_rows = self._build_status_mix_rows(chart_data)
+        if status_rows:
+            story.append(Paragraph("Order Status Mix", styles['Heading2']))
+            status_table = Table(status_rows, colWidths=[2.6*inch, 1.5*inch, 1.6*inch], repeatRows=1)
+            status_table.setStyle(self._create_table_style('#00897B', '#E0F2F1', font_size=8))
+            story.append(status_table)
+            story.append(Spacer(1, 14))
+
+        trend_rows = self._build_order_trend_rows(chart_data)
+        if trend_rows:
+            story.append(Paragraph("Orders Over Time", styles['Heading2']))
+            story.append(Paragraph(
+                "Recent historical periods are shown below so the PDF captures the same trend context visible in the dashboard charts.",
+                section_note_style
+            ))
+            trend_table = Table(
+                trend_rows,
+                colWidths=[1.5*inch, 1.0*inch, 1.4*inch, 1.3*inch, 1.1*inch],
+                repeatRows=1
+            )
+            trend_table.setStyle(self._create_table_style('#3949AB', '#E8EAF6', font_size=8))
+            story.append(trend_table)
+            story.append(Spacer(1, 14))
+
+        # AI Forecast Summary
+        story.append(Paragraph("AI Sales Forecast", styles['Heading2']))
+        story.append(Paragraph(prediction_data.get('summary', 'No forecast available.'), styles['BodyText']))
+        story.append(Spacer(1, 8))
+
+        prediction_table_data = [
+            ['Forecast Window', 'Projected Revenue', 'Projected Orders', 'Confidence', 'Trend'],
+            [
+                prediction_data.get('forecast_period_label', 'N/A'),
+                f"${prediction_data.get('predicted_revenue', 0):,.2f}",
+                f"{prediction_data.get('predicted_orders', 0):,}",
+                f"{prediction_data.get('confidence_score', 0)}% ({prediction_data.get('confidence_label', 'Low confidence')})",
+                prediction_data.get('trend_direction', 'Stable')
+            ]
+        ]
+
+        prediction_table = Table(prediction_table_data, colWidths=[1.3*inch, 1.4*inch, 1.2*inch, 1.6*inch, 1.0*inch], repeatRows=1)
+        prediction_table.setStyle(self._create_table_style('#EF6C00', '#FFF3E0', font_size=8))
+        story.append(prediction_table)
+        story.append(Spacer(1, 12))
+
+        forecast_series = prediction_data.get('forecast_series', [])
+        if forecast_series:
+            forecast_table_data = [['Forecast Period', 'Revenue', 'Orders']]
+            for item in forecast_series:
+                forecast_table_data.append([
+                    str(item.get('period', 'N/A')),
+                    f"${item.get('revenue', 0):,.2f}",
+                    f"{item.get('orders', 0):,}"
+                ])
+
+            story.append(Paragraph("Forecast Breakdown", styles['Heading3']))
+            forecast_table = Table(forecast_table_data, colWidths=[2.2*inch, 1.5*inch, 1.3*inch], repeatRows=1)
+            forecast_table.setStyle(self._create_table_style('#1565C0', '#E3F2FD', font_size=8))
+            story.append(forecast_table)
+            story.append(Spacer(1, 12))
+
+        recommendations = prediction_data.get('recommendations', [])
+        if recommendations:
+            story.append(Paragraph("Recommended Actions", styles['Heading3']))
+            for recommendation in recommendations:
+                story.append(Paragraph(f"• {recommendation}", styles['BodyText']))
+            story.append(Spacer(1, 12))
+
+        supplier_rows = self._build_supplier_rows(supplier_overview)
+        if supplier_rows:
+            story.append(Paragraph("Supplier Ratings & Quality", styles['Heading2']))
+            story.append(Paragraph(self._build_supplier_summary_text(supplier_overview), section_note_style))
+            supplier_table = Table(
+                supplier_rows,
+                colWidths=[1.7*inch, 1.2*inch, 0.8*inch, 0.8*inch, 0.9*inch, 0.9*inch],
+                repeatRows=1
+            )
+            supplier_table.setStyle(self._create_table_style('#8E24AA', '#F3E5F5', font_size=8))
+            story.append(supplier_table)
+            story.append(Spacer(1, 12))
+
+        supplier_watchlist_rows = self._build_supplier_watchlist_rows(supplier_overview)
+        if supplier_watchlist_rows:
+            story.append(Paragraph("Supplier Watchlist", styles['Heading3']))
+            supplier_watchlist_table = Table(
+                supplier_watchlist_rows,
+                colWidths=[1.9*inch, 1.0*inch, 1.2*inch, 1.1*inch, 1.0*inch],
+                repeatRows=1
+            )
+            supplier_watchlist_table.setStyle(self._create_table_style('#C62828', '#FFEBEE', font_size=8))
+            story.append(supplier_watchlist_table)
+            story.append(Spacer(1, 12))
+
+        watchlist_rows = self._build_watchlist_rows(surge_items)
+        if watchlist_rows:
+            story.append(Paragraph("AI Demand Surge Watchlist", styles['Heading2']))
+            story.append(Paragraph(
+                "Products below are flagged because recent demand suggests a higher short-term sales run-rate than current inventory comfortably supports.",
+                section_note_style
+            ))
+            watchlist_table = Table(
+                watchlist_rows,
+                colWidths=[1.8*inch, 0.9*inch, 0.9*inch, 0.8*inch, 1.0*inch, 0.9*inch],
+                repeatRows=1
+            )
+            watchlist_table.setStyle(self._create_table_style('#D81B60', '#FCE4EC', font_size=8))
+            story.append(watchlist_table)
+            story.append(Spacer(1, 12))
 
         # Recent Orders Table
         if recent_orders:
@@ -726,18 +1208,8 @@ class AnalyticsDashboard(tk.Frame):
                     order.get('status', 'Unknown')
                 ])
             
-            orders_table = Table(orders_data, colWidths=[1.5*inch, 2*inch, 1*inch, 1*inch])
-            orders_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4CAF50')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('FONTSIZE', (0, 1), (-1, -1), 8)
-            ]))
+            orders_table = Table(orders_data, colWidths=[1.5*inch, 2*inch, 1*inch, 1*inch], repeatRows=1)
+            orders_table.setStyle(self._create_table_style('#4CAF50', '#ECEFF1', font_size=8))
             story.append(orders_table)
 
         # Build PDF
@@ -810,10 +1282,15 @@ class AnalyticsDashboard(tk.Frame):
 • Export CSV: Save data to spreadsheet format
 
 📈 Charts:
-• Revenue Trend: Shows sales over time (daily/monthly based on period)
+• Revenue Trend: Shows sales over time with AI forecast overlay
 • Top Products: Best-selling items for selected period
 • Order Status: Distribution of order statuses
-• Order Count: Number of orders over time
+• Order Count: Number of orders over time with forecasted demand
+
+🤖 AI Forecast:
+• Forecast cards summarize projected revenue, expected orders, and confidence
+• Recommendations translate the forecast into planning actions
+• PDF reports include the same forecast snapshot and breakdown table
 
 💡 Tips:
 • Charts automatically update when you change the time period

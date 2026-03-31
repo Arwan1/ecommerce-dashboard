@@ -41,6 +41,10 @@ def create_tables():
                 description TEXT,
                 price DECIMAL(10, 2) NOT NULL,
                 stock INT NOT NULL,
+                reorder_level INT DEFAULT 10,
+                is_ready_made TINYINT(1) DEFAULT 1,
+                ready_made_supplier VARCHAR(100),
+                supplier_rating DECIMAL(3, 2),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """)
@@ -52,6 +56,7 @@ def create_tables():
                 customer_name VARCHAR(100) NOT NULL,
                 user_id INT,
                 total_price DECIMAL(10, 2) NOT NULL,
+                status VARCHAR(30) DEFAULT 'Preparing',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
@@ -77,6 +82,27 @@ def create_tables():
                 order_id INT NOT NULL,
                 scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (order_id) REFERENCES orders(id)
+            )
+            """)
+
+            # Create canonical Returns table used by dashboards/analytics
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS returns (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                order_id INT NOT NULL,
+                product_id INT NOT NULL,
+                reason VARCHAR(255) NOT NULL DEFAULT 'Unspecified',
+                status VARCHAR(20) NOT NULL DEFAULT 'Pending',
+                refund_amount DECIMAL(10, 2) DEFAULT 0.00,
+                admin_notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT fk_returns_order FOREIGN KEY (order_id) REFERENCES orders(id),
+                CONSTRAINT fk_returns_product FOREIGN KEY (product_id) REFERENCES products(id),
+                INDEX idx_returns_order_id (order_id),
+                INDEX idx_returns_product_id (product_id),
+                INDEX idx_returns_status (status),
+                INDEX idx_returns_created_at (created_at)
             )
             """)
 

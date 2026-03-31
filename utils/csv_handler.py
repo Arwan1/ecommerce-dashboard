@@ -1,67 +1,41 @@
 import csv
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
+
 
 class CSVHandler:
-    """
-    Handles importing and exporting data in CSV format.
-    """
-    def import_from_csv(self, db_insert_function):
-        """
-        Opens a file dialog to import a CSV and uses a provided function
-        to insert each row into the database.
-        
-        Args:
-            db_insert_function: A function that takes a single row (list) as an argument
-                                and handles its insertion into the database.
-        """
-        file_path = filedialog.askopenfilename(
-            title="Select a CSV file to import",
-            filetypes=[("CSV files", "*.csv")]
+    """Shared CSV file handling utilities for dashboard imports and exports."""
+
+    @staticmethod
+    def choose_import_file(title="Select CSV file"):
+        """Open a file picker for CSV imports."""
+        return filedialog.askopenfilename(
+            title=title,
+            filetypes=[("CSV files", "*.csv")],
         )
-        if not file_path:
-            return
 
-        try:
-            with open(file_path, 'r', newline='', encoding='utf-8') as file:
-                reader = csv.reader(file)
-                header = next(reader) # Skip header row
-                
-                imported_count = 0
-                for row in reader:
-                    try:
-                        db_insert_function(row)
-                        imported_count += 1
-                    except Exception as e:
-                        print(f"Could not import row {row}: {e}")
-            
-            messagebox.showinfo("Import Successful", f"Successfully imported {imported_count} records.")
-
-        except Exception as e:
-            messagebox.showerror("Import Error", f"An error occurred during CSV import: {e}")
-
-    def export_to_csv(self, data, header):
-        """
-        Opens a file dialog to save data to a CSV file.
-        
-        Args:
-            data (list of lists): The data rows to write.
-            header (list): The header row.
-        """
-        file_path = filedialog.asksaveasfilename(
-            title="Save data as CSV",
+    @staticmethod
+    def choose_export_file(title="Save CSV file", default_name="export.csv"):
+        """Open a save dialog for CSV exports."""
+        return filedialog.asksaveasfilename(
+            title=title,
             defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")]
+            initialfile=default_name,
+            filetypes=[("CSV files", "*.csv")],
         )
-        if not file_path:
-            return
 
-        try:
-            with open(file_path, 'w', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-                writer.writerow(header)
-                writer.writerows(data)
-            
-            messagebox.showinfo("Export Successful", f"Data successfully exported to {file_path}")
+    @staticmethod
+    def load_dict_rows(file_path):
+        """Read a CSV file into a list of dictionaries."""
+        with open(file_path, "r", newline="", encoding="utf-8-sig") as file:
+            reader = csv.DictReader(file)
+            if not reader.fieldnames:
+                raise ValueError("The selected CSV file does not contain a header row.")
+            return list(reader)
 
-        except Exception as e:
-            messagebox.showerror("Export Error", f"An error occurred during CSV export: {e}")
+    @staticmethod
+    def write_dict_rows(file_path, fieldnames, rows):
+        """Write dictionaries to a CSV file using a fixed column order."""
+        with open(file_path, "w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)

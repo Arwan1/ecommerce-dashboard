@@ -1,9 +1,12 @@
 import tkinter as tk
 from tkinter import messagebox
 import random
-from email_utils import send_email
+
+import re
 from config import DB_CONFIG
 from backend.user_manager import UserManager
+from backend.security_manager import SecurityManager
+
 try:
     import mysql.connector
     from mysql.connector import Error
@@ -75,6 +78,10 @@ class LoginWindow(tk.Frame):
         # Register button
         tk.Button(form_frame, text="Register", font=("Arial", 14), bg="#2196F3", fg="white", command=self.show_register_form).pack(pady=10)
 
+    def is_valid_email(self, email):
+        # Check for format name@url.domain using regex
+        return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+
     def login(self):
         email = self.email_entry.get()
         password = self.password_entry.get()
@@ -83,13 +90,17 @@ class LoginWindow(tk.Frame):
             messagebox.showerror("Error", "Please enter both email and password.")
             return
 
+        if not self.is_valid_email(email):
+            messagebox.showerror("Invalid Email", "Please enter a valid email address (e.g., user@example.com).")
+            return
+
         try:
             # Connect to the database and validate credentials
             conn = mysql.connector.connect(**DB_CONFIG)
             cursor = conn.cursor(dictionary=True)
 
             # Hash the entered password
-            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            hashed_password = SecurityManager().hash_password(password)
 
             # Query the database for matching credentials
             cursor.execute(
@@ -101,11 +112,9 @@ class LoginWindow(tk.Frame):
             conn.close()
 
             if user_data:
-                # Create a User object with the retrieved data
                 user = User(user_data)
-                print(f"Debug: Logged in user: {user.username}, Role: {user.role}")  # Debug info
-                
-                # Clear the login window and proceed to the main GUI
+                print(f"Debug: Logged in user: {user.username}, Role: {user.role}")  # For debugging in the console
+                # Clear the login window and move on to the main GUI
                 self.parent.show_main_gui(user)
             else:
                 messagebox.showerror("Login Failed", "Invalid email or password.")
@@ -162,6 +171,10 @@ class LoginWindow(tk.Frame):
     def register(self):
         new_email = self.new_email_entry.get()
         new_password = self.new_password_entry.get()
+
+        if not self.is_valid_email(new_email):
+            messagebox.showerror("Invalid Email", "Please enter a valid email address (e.g., user@example.com).")
+            return
 
         # Generate a random confirmation code
         confirmation_code = random.randint(100000, 999999)

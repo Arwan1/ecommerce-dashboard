@@ -1,7 +1,7 @@
 try:
     import mysql.connector
 except ImportError:
-    print("❌ mysql-connector-python not installed. Installing now...")
+    print("mysql-connector-python not installed. Installing now...")
     import subprocess
     import sys
     subprocess.check_call([sys.executable, "-m", "pip", "install", "mysql-connector-python"])
@@ -15,13 +15,6 @@ DB_CONFIG = {
     'database': 'ecommerce_db'
 }
 
-try:
-    conn = mysql.connector.connect(**DB_CONFIG)
-    if conn.is_connected():
-        print("✅ Connection successful!")
-except Exception as e:
-    print("❌ Connection failed:", e)
-
 #for sending automated emails
 EMAIL_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
@@ -29,3 +22,12 @@ EMAIL_CONFIG = {
     'sender_email': 'onyxecommercedashboard@gmail.com',
     'sender_password': 'larq wcbg hljz adci'
 }
+
+if __name__ == "__main__":
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        if conn.is_connected():
+            print("Connection successful!")
+        conn.close()
+    except Exception as e:
+        print("Connection failed:", e)

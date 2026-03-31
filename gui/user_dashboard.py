@@ -12,6 +12,7 @@ class UserDashboard(tk.Frame):
         super().__init__(master)
         self.master = master
         self.user_manager = UserManager()
+        self.user_rows = []
         self.create_widgets()
         self.load_users_async()
 
@@ -32,6 +33,17 @@ class UserDashboard(tk.Frame):
         self.title_label = tk.Label(self.users_frame, text="User Management Dashboard", 
                                    font=("Arial", 20, "bold"))
         self.title_label.pack(pady=10)
+
+        search_frame = ttk.Frame(self.users_frame)
+        search_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        ttk.Label(search_frame, text="Search Users:").pack(side="left")
+        self.user_search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.user_search_var, width=40)
+        search_entry.pack(side="left", padx=(8, 8))
+        search_entry.bind("<KeyRelease>", lambda event: self.apply_user_filter())
+
+        ttk.Button(search_frame, text="Clear", command=self.clear_user_search).pack(side="left")
 
         # Treeview to display users in spreadsheet format
         self.tree = ttk.Treeview(self.users_frame, 
@@ -123,12 +135,10 @@ class UserDashboard(tk.Frame):
         """
         Populate the treeview with user data.
         """
-        # Clear existing items
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self.user_rows = []
 
         if not users:
-            self.tree.insert("", "end", values=("", "No users found", "", "", ""))
+            self.render_user_rows([])
             return
 
         for user in users:
@@ -143,22 +153,63 @@ class UserDashboard(tk.Frame):
             # Determine tag for row coloring
             tag = user.get('role', 'user')
 
-            self.tree.insert("", "end", values=(
+            values = (
                 user.get('id', ''),
                 user.get('username', ''),
                 user.get('email', ''),
                 user.get('role', '').title(),
                 created_date
-            ), tags=(tag,))
+            )
+            search_text = " ".join(str(value).lower() for value in values)
+
+            self.user_rows.append({
+                "values": values,
+                "tags": (tag,),
+                "search_text": search_text,
+            })
+
+        self.apply_user_filter()
 
     def show_error_loading_users(self, error_message):
         """
         Show error when loading users fails.
         """
+        self.user_rows = []
         for item in self.tree.get_children():
             self.tree.delete(item)
         
         self.tree.insert("", "end", values=("", f"Error loading users: {error_message}", "", "", ""))
+
+    def render_user_rows(self, rows):
+        """Render user rows into the treeview."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        if not rows:
+            empty_message = "No matching users found" if self.user_search_var.get().strip() else "No users found"
+            self.tree.insert("", "end", values=("", empty_message, "", "", ""))
+            return
+
+        for row in rows:
+            self.tree.insert("", "end", values=row["values"], tags=row["tags"])
+
+    def apply_user_filter(self):
+        """Filter users using the current search term."""
+        search_term = self.user_search_var.get().strip().lower()
+        if not search_term:
+            self.render_user_rows(self.user_rows)
+            return
+
+        filtered_rows = [
+            row for row in self.user_rows
+            if search_term in row["search_text"]
+        ]
+        self.render_user_rows(filtered_rows)
+
+    def clear_user_search(self):
+        """Reset the user search field."""
+        self.user_search_var.set("")
+        self.apply_user_filter()
 
     def add_user(self):
         """

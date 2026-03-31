@@ -5,6 +5,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
 from database.db_operations import DBOperations
 from database.db_connector import get_db_connection
+from backend.inventory_manager import InventoryManager
+from gui.scroll_utils import attach_scrollable_frame, bind_mousewheel_to_canvas
 
 class InventoryDashboard(tk.Frame):
     """
@@ -14,6 +16,7 @@ class InventoryDashboard(tk.Frame):
         super().__init__(master)
         self.master = master
         self.db_ops = DBOperations()
+        self.inventory_manager = InventoryManager()
         self.create_widgets()
         self.load_dashboard_data()
 
@@ -34,17 +37,13 @@ class InventoryDashboard(tk.Frame):
         scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        attach_scrollable_frame(canvas, scrollable_frame)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        bind_mousewheel_to_canvas(self, canvas)
 
         # Top section with charts
         charts_frame = ttk.LabelFrame(scrollable_frame, text="Inventory Overview", padding="10")
@@ -54,13 +53,50 @@ class InventoryDashboard(tk.Frame):
         charts_container = ttk.Frame(charts_frame)
         charts_container.pack(fill="x")
 
-        # Create matplotlib figure for pie charts
+        # Create matplotlib figure for inventory charts
         self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(12, 6))
-        self.fig.suptitle('Inventory Count Overview', fontsize=16, fontweight='bold')
+        self.fig.suptitle('Inventory Stock Overview', fontsize=16, fontweight='bold')
         
         # Create canvas for matplotlib
         self.chart_canvas = FigureCanvasTkAgg(self.fig, charts_container)
         self.chart_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # AI surge prediction section
+        surge_frame = ttk.LabelFrame(scrollable_frame, text="AI Demand Surge Watch", padding="10")
+        surge_frame.pack(fill="x", pady=5)
+
+        surge_summary_frame = ttk.Frame(surge_frame)
+        surge_summary_frame.pack(fill="x", pady=(0, 8))
+
+        self.surge_summary_label = ttk.Label(
+            surge_summary_frame,
+            text="Scanning recent product demand for likely surges...",
+            font=("Arial", 10, "bold"),
+            foreground="#1F2937"
+        )
+        self.surge_summary_label.pack(anchor="w")
+
+        self.surge_detail_label = ttk.Label(
+            surge_summary_frame,
+            text="Products with accelerating demand and low stock coverage will appear below.",
+            font=("Arial", 9),
+            foreground="#4B5563"
+        )
+        self.surge_detail_label.pack(anchor="w", pady=(4, 0))
+
+        surge_columns = ("Product", "Last 7 Days", "Last 30 Days", "Next 7 Days", "Stock", "Coverage", "Urgency")
+        self.surge_tree = ttk.Treeview(surge_frame, columns=surge_columns, show="headings", height=6)
+        for column in surge_columns:
+            self.surge_tree.heading(column, text=column)
+
+        self.surge_tree.column("Product", width=220)
+        self.surge_tree.column("Last 7 Days", width=90, anchor="center")
+        self.surge_tree.column("Last 30 Days", width=90, anchor="center")
+        self.surge_tree.column("Next 7 Days", width=90, anchor="center")
+        self.surge_tree.column("Stock", width=80, anchor="center")
+        self.surge_tree.column("Coverage", width=90, anchor="center")
+        self.surge_tree.column("Urgency", width=90, anchor="center")
+        self.surge_tree.pack(fill="x")
 
         # Low stock alerts section
         alerts_frame = ttk.LabelFrame(scrollable_frame, text="Low Stock Alerts", padding="10")
@@ -91,22 +127,21 @@ class InventoryDashboard(tk.Frame):
         button_container = ttk.Frame(buttons_frame)
         button_container.pack()
 
-        # Main management buttons
-        ttk.Button(button_container, text="📦 Manage Products", 
-                  command=self.open_products_manager, 
-                  style="Accent.TButton").pack(side="left", padx=10, pady=5)
-        
-        ttk.Button(button_container, text="🔧 Manage Raw Materials", 
-                  command=self.open_raw_materials_manager, 
-                  style="Accent.TButton").pack(side="left", padx=10, pady=5)
-        
-        ttk.Button(button_container, text="🔄 Refresh Dashboard", 
-                  command=self.load_dashboard_data).pack(side="left", padx=10, pady=5)
+        # Main management buttons (big and colorful)
+        tk.Button(button_container, text="📦 Manage Products", 
+              command=self.open_products_manager, 
+              bg="#2196F3", fg="white", font=("Arial", 10, "bold"),
+              padx=20, pady=8, relief="raised", borderwidth=2).pack(side="left", padx=10, pady=5)
 
-        # Bind mousewheel to canvas
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        tk.Button(button_container, text="🔧 Manage Raw Materials", 
+              command=self.open_raw_materials_manager, 
+              bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
+              padx=20, pady=8, relief="raised", borderwidth=2).pack(side="left", padx=10, pady=5)
+
+        tk.Button(button_container, text="🔄 Refresh Dashboard", 
+              command=self.load_dashboard_data,
+              bg="#FF9800", fg="white", font=("Arial", 10, "bold"),
+              padx=20, pady=8, relief="raised", borderwidth=2).pack(side="left", padx=10, pady=5)
 
     def load_dashboard_data(self):
         """
@@ -119,21 +154,38 @@ class InventoryDashboard(tk.Frame):
                 materials_data = self.get_raw_materials_data()
                 low_products = self.get_low_stock_products()
                 low_materials = self.get_low_stock_materials()
+                surge_predictions = self.inventory_manager.get_predicted_product_surges()
                 
                 # Update UI in main thread
-                self.after(0, lambda: self.update_dashboard(products_data, materials_data, low_products, low_materials))
+                self.after(0, lambda: self.safe_update_dashboard(
+                    products_data,
+                    materials_data,
+                    low_products,
+                    low_materials,
+                    surge_predictions
+                ))
             except Exception as e:
                 self.after(0, lambda: self.handle_error(str(e)))
         
         thread = threading.Thread(target=load_in_background, daemon=True)
         thread.start()
 
-    def update_dashboard(self, products_data, materials_data, low_products, low_materials):
+    def safe_update_dashboard(self, products_data, materials_data, low_products, low_materials, surge_predictions):
+        """Update dashboard safely on the Tk main thread."""
+        try:
+            self.update_dashboard(products_data, materials_data, low_products, low_materials, surge_predictions)
+        except Exception as e:
+            self.handle_error(str(e))
+
+    def update_dashboard(self, products_data, materials_data, low_products, low_materials, surge_predictions):
         """
         Update the dashboard with loaded data.
         """
-        # Update pie charts
-        self.update_pie_charts(products_data, materials_data)
+        # Update inventory charts
+        self.update_inventory_charts(products_data, materials_data)
+
+        # Update AI surge watch
+        self.update_surge_predictions(surge_predictions)
         
         # Update low stock alerts
         if low_products:
@@ -162,49 +214,121 @@ class InventoryDashboard(tk.Frame):
             low_materials_text = "All raw materials well stocked! ✅"
             self.low_materials_label.config(text=low_materials_text, foreground="green")
 
-    def update_pie_charts(self, products_data, materials_data):
+    def update_inventory_charts(self, products_data, materials_data):
         """
-        Update the pie charts with current inventory counts.
+        Update the charts with current inventory counts using raw-number bar charts.
         """
         # Clear all subplots
         for ax in [self.ax1, self.ax2]:
             ax.clear()
 
-        # Chart 1: Products by Count/Stock
+        # Chart 1: Products by stock
         if products_data:
-            # Get product names and their stock quantities
-            product_names = [p['name'][:15] + '...' if len(p['name']) > 15 else p['name'] for p in products_data[:8]]  # Top 8 products
-            product_stocks = [p['stock'] for p in products_data[:8]]
-            
-            if len(products_data) > 8:
-                remaining_stock = sum(p['stock'] for p in products_data[8:])
-                product_names.append(f'Others ({len(products_data) - 8} items)')
-                product_stocks.append(remaining_stock)
-            
-            if product_stocks:
-                colors = plt.cm.Set3(range(len(product_stocks)))
-                self.ax1.pie(product_stocks, labels=product_names, colors=colors, autopct='%1.0f', startangle=90)
-            self.ax1.set_title('Products in Stock (Quantities)')
+            cleaned_products = [
+                {
+                    'name': item.get('name') or 'Unnamed Product',
+                    'stock': float(item.get('stock') or 0)
+                }
+                for item in products_data
+            ]
+            sorted_products = sorted(cleaned_products, key=lambda item: item['stock'], reverse=True)
+            top_products = sorted_products[:8]
+            product_names = [
+                p['name'][:18] + '...' if len(p['name']) > 18 else p['name']
+                for p in top_products
+            ]
+            product_stocks = [p['stock'] for p in top_products]
 
-        # Chart 2: Raw Materials by Count/Quantity
+            bars = self.ax1.barh(product_names, product_stocks, color="#42A5F5", alpha=0.85)
+            self.ax1.invert_yaxis()
+            self.ax1.set_title('Top Products by Units in Stock')
+            self.ax1.set_xlabel('Units')
+            max_product_stock = max(product_stocks) if product_stocks else 0
+            for bar, value in zip(bars, product_stocks):
+                value_text = f"{int(value)}" if float(value).is_integer() else f"{value:.1f}"
+                self.ax1.text(value + (max_product_stock * 0.01 if max_product_stock else 0.2),
+                              bar.get_y() + bar.get_height() / 2,
+                              value_text if value else "0",
+                              va='center',
+                              fontsize=9)
+        else:
+            self.ax1.text(0.5, 0.5, 'No product stock data available',
+                          ha='center', va='center', transform=self.ax1.transAxes)
+            self.ax1.set_title('Top Products by Units in Stock')
+
+        # Chart 2: Raw Materials by quantity
         if materials_data:
-            # Get material names and their quantities
-            material_names = [m['name'][:15] + '...' if len(m['name']) > 15 else m['name'] for m in materials_data[:8]]  # Top 8 materials
-            material_quantities = [m['quantity'] for m in materials_data[:8]]
-            
-            if len(materials_data) > 8:
-                remaining_quantity = sum(m['quantity'] for m in materials_data[8:])
-                material_names.append(f'Others ({len(materials_data) - 8} items)')
-                material_quantities.append(remaining_quantity)
-            
-            if material_quantities:
-                colors = plt.cm.Pastel1(range(len(material_quantities)))
-                self.ax2.pie(material_quantities, labels=material_names, colors=colors, autopct='%1.1f', startangle=90)
-            self.ax2.set_title('Raw Materials in Stock (Quantities)')
+            cleaned_materials = [
+                {
+                    'name': item.get('name') or 'Unnamed Material',
+                    'quantity': float(item.get('quantity') or 0)
+                }
+                for item in materials_data
+            ]
+            sorted_materials = sorted(cleaned_materials, key=lambda item: item['quantity'], reverse=True)
+            top_materials = sorted_materials[:8]
+            material_names = [
+                m['name'][:18] + '...' if len(m['name']) > 18 else m['name']
+                for m in top_materials
+            ]
+            material_quantities = [m['quantity'] for m in top_materials]
+
+            bars = self.ax2.barh(material_names, material_quantities, color="#81C784", alpha=0.85)
+            self.ax2.invert_yaxis()
+            self.ax2.set_title('Top Raw Materials by Quantity on Hand')
+            self.ax2.set_xlabel('Quantity')
+            max_material_quantity = max(material_quantities) if material_quantities else 0
+            for bar, value in zip(bars, material_quantities):
+                self.ax2.text(value + (max_material_quantity * 0.01 if max_material_quantity else 0.2),
+                              bar.get_y() + bar.get_height() / 2,
+                              f"{value:.1f}",
+                              va='center',
+                              fontsize=9)
+        else:
+            self.ax2.text(0.5, 0.5, 'No raw material stock data available',
+                          ha='center', va='center', transform=self.ax2.transAxes)
+            self.ax2.set_title('Top Raw Materials by Quantity on Hand')
 
         # Refresh the canvas
         self.fig.tight_layout()
         self.chart_canvas.draw()
+
+    def update_surge_predictions(self, surge_predictions):
+        """Render predicted demand surges for individual goods."""
+        for item in self.surge_tree.get_children():
+            self.surge_tree.delete(item)
+
+        if not surge_predictions:
+            self.surge_summary_label.config(
+                text="No immediate product surges detected from recent demand.",
+                foreground="#2E7D32"
+            )
+            self.surge_detail_label.config(
+                text="Current demand looks stable relative to available stock."
+            )
+            return
+
+        critical_count = sum(1 for item in surge_predictions if item['urgency'] == "Critical")
+        high_count = sum(1 for item in surge_predictions if item['urgency'] == "High")
+        self.surge_summary_label.config(
+            text=f"{len(surge_predictions)} products show surge risk, including {critical_count} critical and {high_count} high-priority items.",
+            foreground="#C62828" if critical_count else "#EF6C00"
+        )
+        self.surge_detail_label.config(
+            text="Predictions compare last 7-day demand against the recent monthly baseline and estimate the next 7 days."
+        )
+
+        for item in surge_predictions:
+            coverage = f"{item['stock_coverage_weeks']} wks" if item['stock_coverage_weeks'] is not None else "N/A"
+            self.surge_tree.insert("", "end", values=(
+                item['product_name'],
+                item['units_last_7'],
+                item['units_last_30'],
+                item['predicted_next_7'],
+                item['stock'],
+                coverage,
+                item['urgency']
+            ))
 
     def get_products_data(self):
         """Get products data using DBOperations."""
@@ -242,6 +366,7 @@ class ProductsManager(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
+        self.product_rows = []
         self.title("Products Management")
         self.geometry("1200x700")
         self.grab_set()  # Make it modal
@@ -255,11 +380,22 @@ class ProductsManager(tk.Toplevel):
         title_label = tk.Label(self, text="Products Management", font=("Arial", 18, "bold"))
         title_label.pack(pady=10)
 
+        search_frame = ttk.Frame(self)
+        search_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        ttk.Label(search_frame, text="Search Products:").pack(side="left")
+        self.product_search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.product_search_var, width=45)
+        search_entry.pack(side="left", padx=(8, 8))
+        search_entry.bind("<KeyRelease>", lambda event: self.apply_product_filter())
+
+        ttk.Button(search_frame, text="Clear", command=self.clear_product_search).pack(side="left")
+
         # Products treeview
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.tree = ttk.Treeview(tree_frame, columns=("ID", "Name", "Price", "Stock", "Reorder", "Ready Made", "Supplier", "Raw Materials"), show="headings")
+        self.tree = ttk.Treeview(tree_frame, columns=("ID", "Name", "Price", "Stock", "Reorder", "Ready Made", "Supplier", "Rating", "Raw Materials"), show="headings")
         
         # Configure headings
         self.tree.heading("ID", text="ID")
@@ -269,6 +405,7 @@ class ProductsManager(tk.Toplevel):
         self.tree.heading("Reorder", text="Reorder Level")
         self.tree.heading("Ready Made", text="Ready Made")
         self.tree.heading("Supplier", text="Supplier")
+        self.tree.heading("Rating", text="Supplier Rating")
         self.tree.heading("Raw Materials", text="Raw Materials Required")
 
         # Configure column widths
@@ -279,6 +416,7 @@ class ProductsManager(tk.Toplevel):
         self.tree.column("Reorder", width=100)
         self.tree.column("Ready Made", width=100)
         self.tree.column("Supplier", width=150)
+        self.tree.column("Rating", width=100, anchor="center")
         self.tree.column("Raw Materials", width=300)
 
         self.tree.pack(fill="both", expand=True)
@@ -301,10 +439,6 @@ class ProductsManager(tk.Toplevel):
 
     def load_products(self):
         """Load products from database."""
-        # Clear existing items
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
         try:
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
@@ -322,12 +456,27 @@ class ProductsManager(tk.Toplevel):
             products = cursor.fetchall()
             conn.close()
 
+            self.product_rows = []
+            supplier_ratings = {
+                item['supplier_name']: item
+                for item in self.parent.inventory_manager.get_supplier_quality_overview(
+                    time_period="All Time",
+                    supplier_type="Finished Products"
+                )
+            }
+
             for product in products:
                 ready_made = "Yes" if product.get('is_ready_made') else "No"
                 supplier = product.get('ready_made_supplier') or "N/A"
+                rating_snapshot = supplier_ratings.get(product.get('ready_made_supplier') or "")
+                supplier_rating = (
+                    f"{rating_snapshot['rating']:.1f}/5.0"
+                    if rating_snapshot and product.get('is_ready_made')
+                    else ("In-house" if not product.get('is_ready_made') else "Pending")
+                )
                 raw_materials = product.get('raw_materials') or "None (Ready Made)" if product.get('is_ready_made') else "None"
-                
-                self.tree.insert("", "end", values=(
+
+                values = (
                     product['id'],
                     product['name'],
                     f"${product['price']:.2f}",
@@ -335,11 +484,52 @@ class ProductsManager(tk.Toplevel):
                     product.get('reorder_level', 10),
                     ready_made,
                     supplier,
+                    supplier_rating,
                     raw_materials
-                ))
+                )
+                search_text = " ".join(str(value).lower() for value in values)
+
+                self.product_rows.append({
+                    "values": values,
+                    "search_text": search_text,
+                })
+
+            self.apply_product_filter()
 
         except Exception as e:
+            self.product_rows = []
             messagebox.showerror("Error", f"Failed to load products: {str(e)}")
+
+    def render_product_rows(self, rows):
+        """Render product rows into the treeview."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        if not rows:
+            empty_message = "No matching products found" if self.product_search_var.get().strip() else "No products found"
+            self.tree.insert("", "end", values=("", empty_message, "", "", "", "", "", "", ""))
+            return
+
+        for row in rows:
+            self.tree.insert("", "end", values=row["values"])
+
+    def apply_product_filter(self):
+        """Filter the product list by the current search term."""
+        search_term = self.product_search_var.get().strip().lower()
+        if not search_term:
+            self.render_product_rows(self.product_rows)
+            return
+
+        filtered_rows = [
+            row for row in self.product_rows
+            if search_term in row["search_text"]
+        ]
+        self.render_product_rows(filtered_rows)
+
+    def clear_product_search(self):
+        """Reset the product search field."""
+        self.product_search_var.set("")
+        self.apply_product_filter()
 
     def add_product(self):
         """Open dialog to add new product."""
@@ -395,6 +585,7 @@ class RawMaterialsManager(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
+        self.material_rows = []
         self.title("Raw Materials Management")
         self.geometry("1200x700")
         self.grab_set()  # Make it modal
@@ -407,6 +598,17 @@ class RawMaterialsManager(tk.Toplevel):
         # Title
         title_label = tk.Label(self, text="Raw Materials Management", font=("Arial", 18, "bold"))
         title_label.pack(pady=10)
+
+        search_frame = ttk.Frame(self)
+        search_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        ttk.Label(search_frame, text="Search Raw Materials:").pack(side="left")
+        self.material_search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.material_search_var, width=45)
+        search_entry.pack(side="left", padx=(8, 8))
+        search_entry.bind("<KeyRelease>", lambda event: self.apply_material_filter())
+
+        ttk.Button(search_frame, text="Clear", command=self.clear_material_search).pack(side="left")
 
         # Materials treeview
         tree_frame = ttk.Frame(self)
@@ -458,10 +660,6 @@ class RawMaterialsManager(tk.Toplevel):
 
     def load_materials(self):
         """Load raw materials from database."""
-        # Clear existing items
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
         try:
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
@@ -469,23 +667,80 @@ class RawMaterialsManager(tk.Toplevel):
             materials = cursor.fetchall()
             conn.close()
 
+            self.material_rows = []
+            supplier_ratings = {
+                item['supplier_name']: item
+                for item in self.parent.inventory_manager.get_supplier_quality_overview(
+                    time_period="All Time",
+                    supplier_type="Raw Materials"
+                )
+            }
+
             for material in materials:
                 # Determine stock status
                 tag = 'low_stock' if material['quantity'] <= material['reorder_level'] else 'normal_stock'
-                
-                self.tree.insert("", "end", values=(
+                supplier_name = material.get('supplier') or ""
+                supplier_snapshot = supplier_ratings.get(supplier_name)
+                effective_rating = (
+                    f"{supplier_snapshot['rating']:.1f}/5.0"
+                    if supplier_snapshot
+                    else f"{float(material.get('supplier_rating') or 0):.1f}/5.0"
+                )
+
+                values = (
                     material['id'],
                     material['name'],
                     f"{material['quantity']:.2f}",
                     material['unit'],
                     f"{material['reorder_level']:.2f}",
                     material['supplier'] or "N/A",
-                    f"{material['supplier_rating']:.1f}/5.0",
+                    effective_rating,
                     f"${material['cost_per_unit']:.2f}"
-                ), tags=(tag,))
+                )
+                search_text = " ".join(str(value).lower() for value in values)
+
+                self.material_rows.append({
+                    "values": values,
+                    "tags": (tag,),
+                    "search_text": search_text,
+                })
+
+            self.apply_material_filter()
 
         except Exception as e:
+            self.material_rows = []
             messagebox.showerror("Error", f"Failed to load raw materials: {str(e)}")
+
+    def render_material_rows(self, rows):
+        """Render raw material rows into the treeview."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        if not rows:
+            empty_message = "No matching raw materials found" if self.material_search_var.get().strip() else "No raw materials found"
+            self.tree.insert("", "end", values=("", empty_message, "", "", "", "", "", ""))
+            return
+
+        for row in rows:
+            self.tree.insert("", "end", values=row["values"], tags=row["tags"])
+
+    def apply_material_filter(self):
+        """Filter the raw materials list by the current search term."""
+        search_term = self.material_search_var.get().strip().lower()
+        if not search_term:
+            self.render_material_rows(self.material_rows)
+            return
+
+        filtered_rows = [
+            row for row in self.material_rows
+            if search_term in row["search_text"]
+        ]
+        self.render_material_rows(filtered_rows)
+
+    def clear_material_search(self):
+        """Reset the raw materials search field."""
+        self.material_search_var.set("")
+        self.apply_material_filter()
 
     def add_material(self):
         """Open dialog to add new raw material."""
@@ -1021,6 +1276,21 @@ class ProductDetailsDialog(tk.Toplevel):
             self.info_text.delete("1.0", "end")
             
             if product:
+                rating_text = "N/A"
+                rating_status = "N/A"
+                if product.get('is_ready_made') and product.get('ready_made_supplier'):
+                    supplier_snapshot = InventoryManager().get_supplier_quality_rating(
+                        product.get('ready_made_supplier'),
+                        time_period="All Time",
+                        supplier_type="Finished Products"
+                    )
+                    if supplier_snapshot:
+                        rating_text = (
+                            f"{supplier_snapshot['rating']:.1f}/5.0 "
+                            f"({supplier_snapshot['confidence_label']} confidence)"
+                        )
+                        rating_status = supplier_snapshot['status_label']
+
                 info = f"""PRODUCT DETAILS
 {'='*50}
 
@@ -1035,6 +1305,8 @@ Basic Information:
 Manufacturing:
 • Ready Made: {'Yes' if product.get('is_ready_made') else 'No'}
 • Supplier: {product.get('ready_made_supplier', 'N/A')}
+• Supplier Rating: {rating_text}
+• Supplier Status: {rating_status}
 
 Financial Summary:
 • Stock Value: ${product['stock'] * product['price']:.2f}
@@ -1113,6 +1385,21 @@ class MaterialDetailsDialog(tk.Toplevel):
             self.info_text.delete("1.0", "end")
             
             if material:
+                supplier_snapshot = None
+                supplier_name = material.get('supplier') or ""
+                if supplier_name:
+                    supplier_snapshot = self.parent.parent.inventory_manager.get_raw_material_supplier_rating(
+                        supplier_name,
+                        time_period="All Time"
+                    )
+
+                effective_rating = (
+                    f"{supplier_snapshot['rating']:.1f}/5.0 ({supplier_snapshot['confidence_label']} confidence)"
+                    if supplier_snapshot
+                    else f"{float(material.get('supplier_rating') or 0):.1f}/5.0"
+                )
+                supplier_status = supplier_snapshot['status_label'] if supplier_snapshot else "N/A"
+                manual_rating = f"{float(material.get('supplier_rating') or 0):.1f}/5.0"
                 stock_status = "LOW STOCK" if material['quantity'] <= material['reorder_level'] else "OK"
                 total_value = material['quantity'] * material['cost_per_unit']
                 
@@ -1134,7 +1421,9 @@ Financial Information:
 
 Supplier Information:
 • Supplier: {material.get('supplier', 'N/A')}
-• Supplier Rating: {material['supplier_rating']:.1f}/5.0
+• Supplier Rating: {effective_rating}
+• Supplier Status: {supplier_status}
+• Material Entry Rating: {manual_rating}
 
 Usage Information:
 """

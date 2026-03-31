@@ -1,11 +1,15 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import threading
+from backend.returns_service import ReturnsService
 from database.db_connector import get_db_connection
 from database.db_operations import DBOperations
+from backend.inventory_manager import InventoryManager
 import datetime
+from gui.scroll_utils import attach_scrollable_frame, bind_mousewheel_to_canvas
+from utils.csv_handler import CSVHandler
 
 class ReturnsDashboard(tk.Frame):
     """
@@ -14,7 +18,7 @@ class ReturnsDashboard(tk.Frame):
     def __init__(self, master, user=None):
         super().__init__(master)
         self.user = user
-        self.pack(fill="both", expand=True)
+        self.inventory_manager = InventoryManager()
         
         # Initialize data
         # self.db_ops = DBOperations()  # Temporarily disabled for debugging
@@ -42,17 +46,13 @@ class ReturnsDashboard(tk.Frame):
         scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        attach_scrollable_frame(canvas, scrollable_frame)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        bind_mousewheel_to_canvas(self, canvas)
 
         # Control Panel Section (moved to top)
         self.create_control_panel(scrollable_frame)
@@ -137,6 +137,12 @@ class ReturnsDashboard(tk.Frame):
                                    bg="#9C27B0", fg="white", font=("Arial", 10, "bold"),
                                    padx=20, pady=8, relief="raised", borderwidth=2)
         self.export_btn.pack(side="left", padx=(0, 10))
+
+        self.import_btn = tk.Button(buttons_frame, text="📥 Import CSV", 
+                                   command=self.import_returns_csv, 
+                                   bg="#00897B", fg="white", font=("Arial", 10, "bold"),
+                                   padx=20, pady=8, relief="raised", borderwidth=2)
+        self.import_btn.pack(side="left", padx=(0, 10))
 
         self.process_btn = tk.Button(buttons_frame, text="⚡ Process Return", 
                                     command=self.quick_process_return, 
@@ -226,7 +232,7 @@ class ReturnsDashboard(tk.Frame):
         table_main_frame.pack(fill="both", expand=True)
         
         # Create TreeView for supplier data
-        columns = ("Supplier", "Type", "Products", "Ordered", "Returned", "Return %", "Avg Order", "Total Refunded", "Status")
+        columns = ("Supplier", "Type", "Products", "Ordered", "Returned", "Return %", "Rating", "Confidence", "Avg Order", "Total Refunded", "Status")
         self.supplier_tree = ttk.Treeview(table_main_frame, columns=columns, show="headings", height=12)
         
         # Configure column headings and widths
@@ -237,6 +243,8 @@ class ReturnsDashboard(tk.Frame):
             "Ordered": (80, "center"),
             "Returned": (80, "center"),
             "Return %": (80, "center"),
+            "Rating": (85, "center"),
+            "Confidence": (90, "center"),
             "Avg Order": (90, "center"),
             "Total Refunded": (110, "center"),
             "Status": (90, "center")
@@ -284,118 +292,30 @@ class ReturnsDashboard(tk.Frame):
             time_period = self.supplier_period_var.get()
             supplier_type = self.supplier_type_var.get()
             
-            # Create date filter
-            date_filter = ""
-            if time_period == "Last 7 Days":
-                date_filter = "AND (r.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) OR r.created_at IS NULL)"
-            elif time_period == "Last 30 Days":
-                date_filter = "AND (r.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) OR r.created_at IS NULL)"
-            elif time_period == "Last 90 Days":
-                date_filter = "AND (r.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY) OR r.created_at IS NULL)"
-            elif time_period == "Last Year":
-                date_filter = "AND (r.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR) OR r.created_at IS NULL)"
-            
-            # Get database connection
-            from database.db_connector import get_db_connection
-            conn = get_db_connection()
-            if not conn:
-                self.supplier_summary_label.config(text="❌ Database connection failed")
-                return
-            
-            cursor = conn.cursor()
-            
-            # Query for finished products (is_ready_made = 1)
-            finished_query = f"""
-                SELECT 
-                    p.ready_made_supplier as supplier_name,
-                    'Finished Products' as supplier_type,
-                    COUNT(DISTINCT p.id) as product_count,
-                    COUNT(DISTINCT oi.id) as total_ordered,
-                    COUNT(DISTINCT r.id) as total_returned,
-                    ROUND((COUNT(DISTINCT r.id) * 100.0 / NULLIF(COUNT(DISTINCT oi.id), 0)), 2) as return_percentage,
-                    ROUND(AVG(oi.quantity * oi.price), 2) as avg_order_value,
-                    COALESCE(SUM(r.refund_amount), 0) as total_refunded
-                FROM products p
-                LEFT JOIN order_items oi ON oi.product_id = p.id
-                LEFT JOIN returns r ON r.product_id = p.id {date_filter}
-                WHERE p.ready_made_supplier IS NOT NULL 
-                  AND p.ready_made_supplier != ''
-                  AND p.ready_made_supplier != 'NULL'
-                  AND p.is_ready_made = 1
-                GROUP BY p.ready_made_supplier
-                HAVING COUNT(DISTINCT oi.id) > 0
-            """
-            
-            # Query for raw materials (is_ready_made = 0)
-            raw_query = f"""
-                SELECT 
-                    p.ready_made_supplier as supplier_name,
-                    'Raw Materials' as supplier_type,
-                    COUNT(DISTINCT p.id) as product_count,
-                    COUNT(DISTINCT oi.id) as total_ordered,
-                    COUNT(DISTINCT r.id) as total_returned,
-                    ROUND((COUNT(DISTINCT r.id) * 100.0 / NULLIF(COUNT(DISTINCT oi.id), 0)), 2) as return_percentage,
-                    ROUND(AVG(oi.quantity * oi.price), 2) as avg_order_value,
-                    COALESCE(SUM(r.refund_amount), 0) as total_refunded
-                FROM products p
-                LEFT JOIN order_items oi ON oi.product_id = p.id
-                LEFT JOIN returns r ON r.product_id = p.id {date_filter}
-                WHERE p.ready_made_supplier IS NOT NULL 
-                  AND p.ready_made_supplier != ''
-                  AND p.ready_made_supplier != 'NULL'
-                  AND p.is_ready_made = 0
-                GROUP BY p.ready_made_supplier
-                HAVING COUNT(DISTINCT oi.id) > 0
-            """
-            
-            all_suppliers = []
-            
-            # Execute finished products query
-            if supplier_type in ["All Suppliers", "Finished Products"]:
-                cursor.execute(finished_query)
-                finished_results = cursor.fetchall()
-                all_suppliers.extend(finished_results)
-            
-            # Execute raw materials query
-            if supplier_type in ["All Suppliers", "Raw Materials"]:
-                cursor.execute(raw_query)
-                raw_results = cursor.fetchall()
-                all_suppliers.extend(raw_results)
-            
-            cursor.close()
-            conn.close()
+            all_suppliers = self.inventory_manager.get_supplier_quality_overview(time_period, supplier_type)
             
             if not all_suppliers:
                 self.supplier_summary_label.config(text=f"📊 No supplier data found for {time_period}")
                 return
             
-            # Sort by return percentage (descending)
-            all_suppliers.sort(key=lambda x: float(x[5]) if x[5] else 0, reverse=True)
-            
             # Populate table
             total_ordered = 0
             total_returned = 0
             total_refunded = 0
+            total_rating = 0.0
             
             for supplier_data in all_suppliers:
-                supplier_name = str(supplier_data[0])[:25]
-                supplier_type_name = supplier_data[1]
-                product_count = int(supplier_data[2])
-                ordered = int(supplier_data[3])
-                returned = int(supplier_data[4])
-                return_pct = float(supplier_data[5]) if supplier_data[5] else 0.0
-                avg_order = float(supplier_data[6]) if supplier_data[6] else 0.0
-                refunded = float(supplier_data[7]) if supplier_data[7] else 0.0
-                
-                # Determine status based on return percentage
-                if return_pct >= 15:
-                    status = "🔴 HIGH"
-                elif return_pct >= 8:
-                    status = "🟡 MEDIUM"
-                elif return_pct >= 3:
-                    status = "🟢 LOW"
-                else:
-                    status = "✅ EXCELLENT"
+                supplier_name = str(supplier_data['supplier_name'])[:25]
+                supplier_type_name = supplier_data['supplier_type']
+                product_count = int(supplier_data['product_count'])
+                ordered = int(supplier_data['total_ordered'])
+                returned = int(supplier_data['total_returned'])
+                return_pct = float(supplier_data['return_rate_percent'])
+                rating = float(supplier_data['rating'])
+                confidence = supplier_data['confidence_label']
+                avg_order = float(supplier_data['avg_order_value'])
+                refunded = float(supplier_data['total_refunded'])
+                status = supplier_data['status_label']
                 
                 # Insert row
                 self.supplier_tree.insert("", "end", values=(
@@ -405,6 +325,8 @@ class ReturnsDashboard(tk.Frame):
                     ordered,
                     returned,
                     f"{return_pct:.1f}%",
+                    f"{rating:.1f}/5.0",
+                    confidence,
                     f"${avg_order:.2f}",
                     f"${refunded:.2f}",
                     status
@@ -414,12 +336,15 @@ class ReturnsDashboard(tk.Frame):
                 total_ordered += ordered
                 total_returned += returned
                 total_refunded += refunded
+                total_rating += rating
             
             # Update summary
             overall_return_rate = (total_returned / total_ordered * 100) if total_ordered > 0 else 0
             supplier_count = len(all_suppliers)
+            avg_rating = (total_rating / supplier_count) if supplier_count else 0
             
             summary_text = (f"📊 {supplier_count} suppliers | "
+                          f"Avg rating: {avg_rating:.1f}/5.0 | "
                           f"Overall return rate: {overall_return_rate:.1f}% | "
                           f"Total ordered: {total_ordered:,} | "
                           f"Total returned: {total_returned:,} | "
@@ -679,6 +604,44 @@ class ReturnsDashboard(tk.Frame):
         else:
             return ""
 
+    def get_status_filter_sql(self, view_type):
+        """Get SQL status filter based on the current returns view."""
+        if view_type == "Pending Returns":
+            return "AND status = 'Pending'"
+        if view_type == "Approved Returns":
+            return "AND status = 'Approved'"
+        if view_type == "Rejected Returns":
+            return "AND status = 'Rejected'"
+        return ""
+
+    def get_filtered_return_ids(self):
+        """Get return IDs for the currently selected dashboard filters."""
+        conn = None
+        try:
+            conn = get_db_connection()
+            if not conn:
+                return []
+
+            cursor = conn.cursor(dictionary=True)
+            date_filter = self.get_date_filter_sql(self.period_var.get()).replace(
+                "created_at", "r.created_at"
+            )
+            status_filter = self.get_status_filter_sql(self.view_type_var.get()).replace(
+                "status", "r.status"
+            )
+            cursor.execute(
+                f"""
+                SELECT r.id
+                FROM returns r
+                WHERE 1=1 {date_filter} {status_filter}
+                ORDER BY r.created_at DESC, r.id DESC
+                """
+            )
+            return [row["id"] for row in cursor.fetchall()]
+        finally:
+            if conn:
+                conn.close()
+
     def get_returns_data(self, time_period, view_type):
         """Get returns KPI data"""
         conn = get_db_connection()
@@ -690,17 +653,12 @@ class ReturnsDashboard(tk.Frame):
             date_filter = self.get_date_filter_sql(time_period)
             
             # Status filter
-            status_filter = ""
-            if view_type == "Pending Returns":
-                status_filter = "AND status = 'Pending'"
-            elif view_type == "Approved Returns":
-                status_filter = "AND status = 'Approved'"
-            elif view_type == "Rejected Returns":
-                status_filter = "AND status = 'Rejected'"
+            status_filter = self.get_status_filter_sql(view_type)
             
             # Total returns
             cursor.execute(f"""
                 SELECT COUNT(*) as total_returns,
+                       COUNT(DISTINCT order_id) as returned_orders,
                        AVG(CASE WHEN status IN ('Approved', 'Rejected') 
                            THEN DATEDIFF(updated_at, created_at) END) as avg_processing_days
                 FROM returns 
@@ -708,16 +666,17 @@ class ReturnsDashboard(tk.Frame):
             """)
             result = cursor.fetchone()
             total_returns = result['total_returns'] or 0
+            returned_orders = result['returned_orders'] or 0
             avg_processing_days = result['avg_processing_days'] or 0
             
-            # Return rate (returns vs total orders)
+            # Return rate based on distinct returned orders vs total orders
             cursor.execute(f"""
                 SELECT COUNT(DISTINCT o.id) as total_orders
                 FROM orders o
-                WHERE 1=1 {date_filter}
+                WHERE 1=1 {date_filter.replace('created_at', 'o.created_at')}
             """)
-            total_orders = cursor.fetchone()['total_orders'] or 1
-            return_rate = (total_returns / total_orders) * 100 if total_orders > 0 else 0
+            total_orders = cursor.fetchone()['total_orders'] or 0
+            return_rate = (returned_orders / total_orders) * 100 if total_orders > 0 else 0
             
             # Pending returns
             cursor.execute(f"""
@@ -773,46 +732,53 @@ class ReturnsDashboard(tk.Frame):
             # 1. Returns trend over time (top-left chart)
             try:
                 if time_period in ["Last 7 Days", "Last 30 Days"]:
-                    # Daily data for short periods
-                    cursor.execute(f"""
-                        SELECT 
-                            DATE(r.created_at) as period,
-                            COUNT(*) as returns_count,
-                            COUNT(DISTINCT o.id) as orders_count
-                        FROM returns r
-                        JOIN orders o ON DATE(r.created_at) = DATE(o.created_at)
-                        WHERE 1=1 {date_filter.replace('created_at', 'r.created_at')}
-                        GROUP BY DATE(r.created_at)
-                        ORDER BY DATE(r.created_at)
-                    """)
+                    period_expr_returns = "DATE(r.created_at)"
+                    period_expr_orders = "DATE(o.created_at)"
                 else:
-                    # Monthly data for longer periods
-                    cursor.execute(f"""
-                        SELECT 
-                            YEAR(r.created_at) as year,
-                            MONTH(r.created_at) as month,
-                            COUNT(*) as returns_count,
-                            COUNT(DISTINCT DATE(o.created_at)) as orders_count
-                        FROM returns r
-                        LEFT JOIN orders o ON YEAR(r.created_at) = YEAR(o.created_at) 
-                                            AND MONTH(r.created_at) = MONTH(o.created_at)
-                        WHERE 1=1 {date_filter.replace('created_at', 'r.created_at')}
-                        GROUP BY YEAR(r.created_at), MONTH(r.created_at)
-                        ORDER BY YEAR(r.created_at), MONTH(r.created_at)
-                    """)
-                    raw_trend = cursor.fetchall()
-                    # Format periods
-                    returns_trend = []
-                    for row in raw_trend:
-                        formatted_row = {
-                            'period': f"{row['year']}-{row['month']:02d}",
-                            'returns_count': row['returns_count'],
-                            'orders_count': row['orders_count'] or 1
+                    period_expr_returns = "DATE_FORMAT(r.created_at, '%Y-%m')"
+                    period_expr_orders = "DATE_FORMAT(o.created_at, '%Y-%m')"
+
+                cursor.execute(f"""
+                    SELECT
+                        {period_expr_returns} as period,
+                        COUNT(DISTINCT r.order_id) as returns_count
+                    FROM returns r
+                    WHERE 1=1 {date_filter.replace('created_at', 'r.created_at')}
+                    GROUP BY {period_expr_returns}
+                    ORDER BY {period_expr_returns}
+                """)
+                returns_rows = cursor.fetchall()
+
+                cursor.execute(f"""
+                    SELECT
+                        {period_expr_orders} as period,
+                        COUNT(*) as orders_count
+                    FROM orders o
+                    WHERE 1=1 {date_filter.replace('created_at', 'o.created_at')}
+                    GROUP BY {period_expr_orders}
+                    ORDER BY {period_expr_orders}
+                """)
+                order_rows = cursor.fetchall()
+
+                trend_by_period = {}
+                for row in order_rows:
+                    trend_by_period[row['period']] = {
+                        'period': row['period'],
+                        'returns_count': 0,
+                        'orders_count': row['orders_count']
+                    }
+
+                for row in returns_rows:
+                    period = row['period']
+                    if period not in trend_by_period:
+                        trend_by_period[period] = {
+                            'period': period,
+                            'returns_count': 0,
+                            'orders_count': 0
                         }
-                        returns_trend.append(formatted_row)
-                    
-                if time_period in ["Last 7 Days", "Last 30 Days"]:
-                    returns_trend = cursor.fetchall()
+                    trend_by_period[period]['returns_count'] = row['returns_count']
+
+                returns_trend = [trend_by_period[period] for period in sorted(trend_by_period)]
             except Exception as e:
                 print(f"Error in returns trend query: {e}")
                 returns_trend = []
@@ -1083,6 +1049,11 @@ class ReturnsDashboard(tk.Frame):
             ttk.Button(toolbar, text="🔄 Refresh", command=lambda: self.refresh_returns_manager(tree)).pack(side="left", padx=5)
             ttk.Button(toolbar, text="✅ Approve Selected", command=lambda: self.bulk_action(tree, "Approved")).pack(side="left", padx=5)
             ttk.Button(toolbar, text="❌ Reject Selected", command=lambda: self.bulk_action(tree, "Rejected")).pack(side="left", padx=5)
+            ttk.Button(
+                toolbar,
+                text="📥 Import",
+                command=lambda: [self.import_returns_csv(), self.refresh_returns_manager(tree)],
+            ).pack(side="left", padx=5)
             ttk.Button(toolbar, text="📊 Export", command=lambda: self.export_selected_returns(tree)).pack(side="left", padx=5)
             
             # Search frame
@@ -1188,54 +1159,48 @@ class ReturnsDashboard(tk.Frame):
     def export_returns_csv(self):
         """Export returns data to CSV"""
         try:
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv")],
-                title="Export Returns Data"
+            filename = CSVHandler.choose_export_file(
+                title="Export Returns Data",
+                default_name="returns_export.csv",
             )
             
             if not filename:
                 return
-
-            import csv
-            
-            conn = get_db_connection()
-            if not conn:
-                return
-            
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get returns data with filters
-            date_filter = self.get_date_filter_sql(self.period_var.get())
-            cursor.execute(f"""
-                SELECT r.id, r.created_at, r.reason, r.status, r.refund_amount,
-                       r.order_id, p.name as product_name
-                FROM returns r
-                LEFT JOIN products p ON r.product_id = p.id
-                WHERE 1=1 {date_filter.replace('created_at', 'r.created_at')}
-                ORDER BY r.created_at DESC
-            """)
-            returns = cursor.fetchall()
-            
-            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(['Return ID', 'Date', 'Product', 'Reason', 'Status', 'Refund Amount', 'Order ID'])
-                
-                for return_item in returns:
-                    date_str = return_item['created_at'].strftime('%Y-%m-%d %H:%M:%S') if return_item['created_at'] else 'N/A'
-                    writer.writerow([
-                        return_item.get('id', 'N/A'),
-                        date_str,
-                        return_item.get('product_name', 'Unknown'),
-                        return_item.get('reason', 'No reason'),
-                        return_item.get('status', 'Unknown'),
-                        return_item.get('refund_amount', 0),
-                        return_item.get('order_id', 'N/A')
-                    ])
-            conn.close()
-            messagebox.showinfo("Success", f"Returns data exported successfully: {filename}")
+            return_ids = self.get_filtered_return_ids()
+            row_count = ReturnsService.export_returns_to_csv(filename, return_ids=return_ids)
+            messagebox.showinfo(
+                "Success",
+                f"Exported {row_count} returns to:\n{filename}",
+            )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export returns data: {str(e)}")
+
+    def import_returns_csv(self):
+        """Import returns from CSV."""
+        file_path = CSVHandler.choose_import_file("Import Returns CSV")
+        if not file_path:
+            return
+
+        try:
+            summary = ReturnsService.import_returns_from_csv(file_path)
+            imported_returns = summary.get("imported_returns", 0)
+            failed_returns = summary.get("failed_returns", 0)
+            errors = summary.get("errors", [])
+
+            if imported_returns:
+                self.load_returns_data()
+
+            details = f"Imported {imported_returns} returns."
+            if failed_returns:
+                preview = "\n".join(errors[:5])
+                details += f"\n\nFailed rows: {failed_returns}\n{preview}"
+                if len(errors) > 5:
+                    details += f"\n...and {len(errors) - 5} more."
+                messagebox.showwarning("Returns CSV Import", details)
+            else:
+                messagebox.showinfo("Returns CSV Import", details)
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Failed to import returns CSV: {str(e)}")
     def quick_process_return(self):
         """Quick return processing dialog"""
         try:
@@ -1395,8 +1360,23 @@ class ReturnsDashboard(tk.Frame):
         if not selected_items:
             messagebox.showwarning("Warning", "Please select returns to export")
             return
-        
-        messagebox.showinfo("Export", f"Exporting {len(selected_items)} selected returns\n(Feature to be implemented)")
+
+        file_path = CSVHandler.choose_export_file(
+            title="Export Selected Returns",
+            default_name="selected_returns.csv",
+        )
+        if not file_path:
+            return
+
+        try:
+            return_ids = [tree.item(item)["values"][0] for item in selected_items]
+            row_count = ReturnsService.export_returns_to_csv(file_path, return_ids=return_ids)
+            messagebox.showinfo(
+                "Export",
+                f"Exported {row_count} returns to:\n{file_path}",
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export selected returns: {str(e)}")
 
     def create_supplier_chart(self, time_period):
         """
@@ -1412,52 +1392,19 @@ class ReturnsDashboard(tk.Frame):
             # Clear existing widgets
             for widget in self.supplier_section_frame.winfo_children():
                 widget.destroy()
-            
-            # Get data from database
-            from database.db_connector import get_db_connection
-            conn = get_db_connection()
-            if not conn:
-                ttk.Label(self.supplier_section_frame, text="Database connection failed", 
-                         font=("Arial", 12), foreground="red").pack(pady=20)
-                return
-            
-            cursor = conn.cursor()
-            
-            # Create date filter
-            date_filter = ""
-            if time_period == "Last 7 Days":
-                date_filter = "AND r.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)"
-            elif time_period == "Last 30 Days":
-                date_filter = "AND r.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
-            elif time_period == "Last 90 Days":
-                date_filter = "AND r.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)"
-            elif time_period == "Last Year":
-                date_filter = "AND r.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR)"
-            
-            # Working query
-            query = f"""
-                SELECT 
-                    p.ready_made_supplier as supplier_name,
-                    COUNT(DISTINCT r.id) as total_returns,
-                    COUNT(DISTINCT oi.id) as total_items_sold,
-                    ROUND((COUNT(DISTINCT r.id) * 100.0 / NULLIF(COUNT(DISTINCT oi.id), 0)), 2) as return_rate_percent,
-                    ROUND(AVG(r.refund_amount), 2) as avg_refund_amount,
-                    SUM(r.refund_amount) as total_refund_amount
-                FROM products p
-                LEFT JOIN returns r ON r.product_id = p.id {date_filter}
-                LEFT JOIN order_items oi ON oi.product_id = p.id
-                WHERE p.ready_made_supplier IS NOT NULL 
-                  AND p.ready_made_supplier != ''
-                GROUP BY p.ready_made_supplier
-                HAVING COUNT(DISTINCT oi.id) > 0
-                ORDER BY return_rate_percent DESC
-                LIMIT 15
-            """
-            
-            cursor.execute(query)
-            results = cursor.fetchall()
-            cursor.close()
-            conn.close()
+
+            results = self.inventory_manager.get_supplier_quality_overview(
+                time_period=time_period,
+                supplier_type="Finished Products"
+            )
+            results.sort(
+                key=lambda item: (
+                    -float(item.get('return_rate_percent') or 0.0),
+                    float(item.get('rating') or 0.0),
+                    str(item.get('supplier_name') or "").lower()
+                )
+            )
+            results = results[:15]
             
             if not results:
                 ttk.Label(self.supplier_section_frame, text=f"No supplier data for {time_period}", 
@@ -1474,9 +1421,12 @@ class ReturnsDashboard(tk.Frame):
             
             # Chart data (top 8)
             chart_data = results[:8]
-            names = [row[0][:12] + "..." if len(row[0]) > 12 else row[0] for row in chart_data]
-            rates = [float(row[3]) if row[3] else 0.0 for row in chart_data]
-            returns = [int(row[1]) for row in chart_data]
+            names = [
+                item['supplier_name'][:12] + "..." if len(item['supplier_name']) > 12 else item['supplier_name']
+                for item in chart_data
+            ]
+            rates = [float(item.get('return_rate_percent') or 0.0) for item in chart_data]
+            returns = [int(item.get('total_returned') or 0) for item in chart_data]
             
             # Create matplotlib chart
             import matplotlib.pyplot as plt
@@ -1499,7 +1449,7 @@ class ReturnsDashboard(tk.Frame):
             for bar, rate, ret_count in zip(bars, rates, returns):
                 height = bar.get_height()
                 ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                       f'{rate:.1f}%\\n({ret_count})', 
+                       f'{rate:.1f}%\n({ret_count})', 
                        ha='center', va='bottom', fontsize=8, fontweight='bold')
             
             plt.tight_layout()
@@ -1514,27 +1464,27 @@ class ReturnsDashboard(tk.Frame):
             table_frame.pack(side="right", fill="both", expand=True)
             
             # Create table
-            columns = ("Supplier", "Returns", "Items", "Rate %", "Avg Refund", "Total Refund")
+            columns = ("Supplier", "Returns", "Items", "Rate %", "Total Refund")
             tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=12)
             
             for col in columns:
                 tree.heading(col, text=col)
-                tree.column(col, width=80, anchor="center")
+                tree.column(col, width=82, anchor="center")
             
-            tree.column("Supplier", width=120, anchor="w")
+            tree.column("Supplier", width=140, anchor="w")
+            tree.column("Total Refund", width=96, anchor="center")
             
             # Add data
             for row in results:
-                name = str(row[0])[:20]
-                returns_count = int(row[1])
-                items = int(row[2])
-                rate = float(row[3]) if row[3] else 0.0
-                avg_refund = float(row[4]) if row[4] else 0.0
-                total_refund = float(row[5]) if row[5] else 0.0
+                name = str(row['supplier_name'])[:20]
+                returns_count = int(row.get('total_returned') or 0)
+                items = int(row.get('total_ordered') or 0)
+                rate = float(row.get('return_rate_percent') or 0.0)
+                total_refund = float(row.get('total_refunded') or 0.0)
                 
                 tree.insert("", "end", values=(
                     name, returns_count, items, f"{rate:.1f}%",
-                    f"${avg_refund:.2f}", f"${total_refund:.2f}"
+                    f"${total_refund:.2f}"
                 ))
             
             # Add scrollbar
@@ -1547,8 +1497,8 @@ class ReturnsDashboard(tk.Frame):
             stats_frame = ttk.Frame(self.supplier_section_frame)
             stats_frame.pack(fill="x", pady=(10, 0))
             
-            avg_rate = sum(float(row[3]) if row[3] else 0 for row in results) / len(results)
-            total_refunds = sum(float(row[5]) if row[5] else 0 for row in results)
+            avg_rate = sum(float(row.get('return_rate_percent') or 0) for row in results) / len(results)
+            total_refunds = sum(float(row.get('total_refunded') or 0) for row in results)
             
             summary = f"📊 {len(results)} suppliers | Avg rate: {avg_rate:.1f}% | Total refunds: ${total_refunds:,.2f}"
             ttk.Label(stats_frame, text=summary, font=("Arial", 10, "bold"), foreground="navy").pack(pady=5)

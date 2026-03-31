@@ -19,8 +19,23 @@ class MainApplication(tk.Tk):
         super().__init__()
         self.title("eCommerce System")
         self.geometry("800x600")
+        self.protocol("WM_DELETE_WINDOW", self.close_application)
 
         self.show_login_window()
+
+    def close_application(self):
+        """Close the GUI and terminate the Python process."""
+        try:
+            try:
+                import matplotlib.pyplot as plt
+                plt.close("all")
+            except Exception:
+                pass
+
+            self.quit()
+            self.destroy()
+        finally:
+            os._exit(0)
 
     def show_login_window(self):
         self.login_window = LoginWindow(self)

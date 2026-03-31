@@ -3,11 +3,13 @@ from database.db_connector import get_db_connection
 import random
 from datetime import datetime, timedelta
 import hashlib
+from setup_returns import setup_returns_schema
 
 def populate_sample_data():
     """
     Populates the database with sample data for the past year with an upward trend.
     """
+    setup_returns_schema()
     conn = get_db_connection()
     if not conn:
         print("❌ Could not connect to database")
@@ -18,6 +20,7 @@ def populate_sample_data():
         
         # Clear existing data (optional - comment out if you want to keep existing data)
         print("🗑️ Clearing existing sample data...")
+        cursor.execute("DELETE FROM returns")
         cursor.execute("DELETE FROM return_claims")
         cursor.execute("DELETE FROM order_items") 
         cursor.execute("DELETE FROM orders WHERE id > 0")  # Keep any existing orders you want
@@ -85,6 +88,7 @@ def populate_sample_data():
         start_date = datetime.now() - timedelta(days=365)
         current_date = start_date
         order_id_list = []
+        order_metadata = {}
         
         # Base number of orders per week (will increase over time)
         base_orders_per_week = 5
@@ -151,21 +155,60 @@ def populate_sample_data():
                         INSERT INTO order_items (order_id, product_id, quantity, price) 
                         VALUES (%s, %s, %s, %s)
                     """, (order_id, product_id, quantity, price))
+
+                order_metadata[order_id] = {
+                    'created_at': order_date,
+                    'items': order_items
+                }
             
             current_date += timedelta(weeks=1)
             week_count += 1
         
-        # Generate some return claims (about 5% of orders)
-        print("🔄 Generating return claims...")
+        # Generate canonical returns and matching return claim scans (about 5% of orders)
+        print("🔄 Generating returns...")
         sample_orders = random.sample(order_id_list, min(len(order_id_list) // 20, len(order_id_list)))  # 5% return rate
+        return_reasons = [
+            "Damaged during delivery",
+            "Wrong item received",
+            "Quality issue",
+            "Size/Fit issue",
+            "Defective on arrival"
+        ]
         
         for order_id in sample_orders:
-            # Random return date (within 30 days of order)
-            cursor.execute("SELECT created_at FROM orders WHERE id = %s", (order_id,))
-            order_date = cursor.fetchone()[0]
+            order_info = order_metadata.get(order_id)
+            if not order_info or not order_info['items']:
+                continue
+
+            order_date = order_info['created_at']
             return_date = order_date + timedelta(days=random.randint(1, 30))
             
             if return_date <= datetime.now():
+                product_id, quantity, price = random.choice(order_info['items'])
+                reason = random.choice(return_reasons)
+                status = random.choices(
+                    ['Pending', 'Approved', 'Rejected'],
+                    weights=[45, 40, 15]
+                )[0]
+                refund_amount = round(price * quantity * random.uniform(0.6, 1.0), 2)
+                updated_at = return_date if status == 'Pending' else return_date + timedelta(days=random.randint(1, 7))
+
+                cursor.execute("""
+                    INSERT INTO returns (
+                        order_id, product_id, reason, status, refund_amount, admin_notes, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    order_id,
+                    product_id,
+                    reason,
+                    status,
+                    refund_amount,
+                    "Sample return generated for dashboard analytics.",
+                    return_date,
+                    updated_at
+                ))
+
                 cursor.execute("""
                     INSERT INTO return_claims (order_id, scan_timestamp) 
                     VALUES (%s, %s)
@@ -181,14 +224,14 @@ def populate_sample_data():
         cursor.execute("SELECT SUM(total_price) FROM orders")
         total_revenue = cursor.fetchone()[0] or 0
         
-        cursor.execute("SELECT COUNT(*) FROM return_claims")
+        cursor.execute("SELECT COUNT(*) FROM returns")
         total_returns = cursor.fetchone()[0]
         
         print(f"""
 📊 Data Summary:
    • Total Orders: {total_orders}
    • Total Revenue: ${total_revenue:,.2f}
-   • Return Claims: {total_returns}
+   • Returns: {total_returns}
    • Products: {len(products)}
    • Customers: {len(users)}
         """)
